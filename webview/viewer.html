@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RasterEye</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      color: #ccc;
+      background: #1e1e1e;
+    }
+
+    #map { position: absolute; inset: 0; }
+
+    #panel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 260px;
+      background: rgba(37, 37, 38, 0.95);
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 12px;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      max-height: calc(100vh - 20px);
+      overflow-y: auto;
+      backdrop-filter: blur(8px);
+    }
+
+    .panel-header {
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #333;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .control-group { margin-bottom: 10px; }
+
+    .control-group label {
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      opacity: 0.7;
+      margin-bottom: 4px;
+    }
+
+    select, input[type="number"] {
+      width: 100%;
+      background: #3c3c3c;
+      color: #ccc;
+      border: 1px solid #555;
+      border-radius: 3px;
+      padding: 4px 6px;
+      font-size: 12px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      margin: 4px 0;
+      accent-color: #007acc;
+    }
+
+    .slider-row { display: flex; align-items: center; gap: 8px; }
+    .slider-row input[type="range"] { flex: 1; }
+    .slider-row span {
+      font-size: 11px;
+      min-width: 36px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .range-row { display: flex; gap: 6px; align-items: center; }
+    .range-row input { flex: 1; }
+    .range-row span { font-size: 11px; opacity: 0.6; }
+
+    #colormap-preview {
+      width: 100%;
+      height: 14px;
+      border-radius: 3px;
+      margin-top: 4px;
+      border: 1px solid #555;
+    }
+
+    .hidden { display: none !important; }
+
+    #loading-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 300;
+      background: rgba(0,0,0,0.4);
+    }
+
+    #loading-box {
+      background: #252526;
+      padding: 16px 24px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      font-size: 13px;
+    }
+
+    #error-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 300;
+      background: rgba(0,0,0,0.4);
+    }
+
+    #error-box {
+      background: #5a1d1d;
+      padding: 16px 24px;
+      border-radius: 6px;
+      border: 1px solid #be1100;
+      max-width: 400px;
+      font-size: 13px;
+    }
+
+    .band-row { display: flex; gap: 6px; margin-bottom: 4px; align-items: center; }
+    .band-row span { font-size: 11px; min-width: 16px; font-weight: 600; }
+    .band-row select { flex: 1; }
+
+    .info-text { font-size: 11px; opacity: 0.6; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="panel">
+    <div class="panel-header" id="filename">Loading...</div>
+
+    <div class="control-group">
+      <label>Base Layer</label>
+      <select id="basemap-select">
+        <option value="light" selected>Light</option>
+        <option value="dark">Dark</option>
+        <option value="osm">OpenStreetMap</option>
+        <option value="satellite">Satellite</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label>Opacity</label>
+      <div class="slider-row">
+        <input type="range" id="opacity-slider" min="0" max="1" step="0.01" value="1">
+        <span id="opacity-value">100%</span>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Render Mode</label>
+      <select id="mode-select">
+        <option value="singleband" selected>Single Band</option>
+        <option value="3band">3-Band Composite</option>
+      </select>
+    </div>
+
+    <div class="control-group hidden" id="falsecolor-group">
+      <label>RGB Bands</label>
+      <div class="band-row">
+        <span style="color:#f44">R</span>
+        <select id="band-r"></select>
+      </div>
+      <div class="band-row">
+        <span style="color:#4f4">G</span>
+        <select id="band-g"></select>
+      </div>
+      <div class="band-row">
+        <span style="color:#48f">B</span>
+        <select id="band-b"></select>
+      </div>
+    </div>
+
+    <div class="control-group hidden" id="singleband-group">
+      <label>Band</label>
+      <select id="band-single"></select>
+    </div>
+
+    <div class="control-group hidden" id="colormap-group">
+      <label>Colormap</label>
+      <select id="colormap-select"></select>
+      <canvas id="colormap-preview" width="236" height="14"></canvas>
+    </div>
+
+    <div class="control-group hidden" id="range-group">
+      <label>Value Range</label>
+      <div class="range-row">
+        <input type="number" id="min-value" step="any" value="0">
+        <span>to</span>
+        <input type="number" id="max-value" step="any" value="255">
+      </div>
+      <div class="info-text" id="data-range-info"></div>
+    </div>
+  </div>
+
+  <div id="loading-overlay">
+    <div id="loading-box">Loading GeoTIFF...</div>
+  </div>
+
+  <div id="error-overlay" class="hidden">
+    <div id="error-box"></div>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script type="module" src="./webview.js"></script>
+</body>
+</html>
