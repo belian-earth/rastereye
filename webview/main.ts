@@ -592,7 +592,7 @@ function init(): void {
     style: BASEMAP_STYLES[state.basemap],
     center: [0, 0],
     zoom: 2,
-    attributionControl: true,
+    attributionControl: false,
   });
 
   overlay = new MapboxOverlay({
@@ -602,8 +602,15 @@ function init(): void {
 
   map.addControl(overlay);
   map.addControl(new maplibregl.NavigationControl(), "top-left");
+  map.addControl(new maplibregl.AttributionControl({ compact: true }));
 
   setupControls();
+
+  // Force attribution collapsed on start
+  map.once("load", () => {
+    const attrib = document.querySelector(".maplibregl-ctrl-attrib");
+    if (attrib) attrib.classList.remove("maplibregl-compact-show");
+  });
 
   map.on("load", () => {
     if (fileUrl) {
