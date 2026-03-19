@@ -1,7 +1,15 @@
 src/**
 webview/**
 node_modules/**
+.vscode/**
+.claude/**
+.github/**
+
 tsconfig.json
 esbuild.mjs
 .gitignore
-*.map
+Makefile
+
+*.tif
+*.tiff
+**/*.map

@@ -46,6 +46,7 @@ const webviewConfig = {
   define: {
     "process.env.NODE_ENV": '"production"',
   },
+  external: ["lerc"], // optional codec, not needed
   alias: {
     http: "./webview/shims/empty.js",
     https: "./webview/shims/empty.js",

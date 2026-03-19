@@ -3,7 +3,12 @@
   "displayName": "RasterEye",
   "description": "Quick GeoTIFF viewer with colormaps, false color composites, and basemap selection",
   "version": "0.1.0",
-  "publisher": "rastereye",
+  "publisher": "belian-earth",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/h-a-graham/rastereye.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -35,10 +40,12 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "package": "npx @vscode/vsce package --no-dependencies"
+    "vsce:package": "vsce package --no-dependencies",
+    "package": "npm run vsce:package"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.19.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.3.0"
   },
