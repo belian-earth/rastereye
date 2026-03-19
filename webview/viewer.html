@@ -60,16 +60,49 @@
     }
 
     .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
       font-weight: 600;
       font-size: 12px;
       color: var(--text-bright);
       margin-bottom: 14px;
       padding-bottom: 10px;
       border-bottom: 1px solid rgba(255,255,255,0.08);
+      letter-spacing: 0.2px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .panel-header span {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      letter-spacing: 0.2px;
+      min-width: 0;
+    }
+    .panel-header .chevron {
+      flex-shrink: 0;
+      opacity: 0.5;
+      transition: transform 0.25s ease, opacity 0.2s;
+    }
+    .panel-header:hover .chevron { opacity: 0.9; }
+    #panel.collapsed .panel-header {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+    #panel.collapsed .chevron {
+      transform: rotate(-90deg);
+    }
+
+    #panel-body {
+      overflow: hidden;
+      max-height: 800px;
+      transition: max-height 0.3s ease, opacity 0.25s ease;
+      opacity: 1;
+    }
+    #panel.collapsed #panel-body {
+      max-height: 0;
+      opacity: 0;
     }
 
     .control-group {
@@ -246,14 +279,71 @@
     .band-r { color: #e06060; }
     .band-g { color: var(--accent); }
     .band-b { color: #6090d0; }
+
+    /* MapLibre navigation controls — glass style */
+    .maplibregl-ctrl-group {
+      background: var(--panel-bg) !important;
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-radius: 8px !important;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+      border: none !important;
+      overflow: hidden;
+    }
+    .maplibregl-ctrl-group button {
+      width: 32px !important;
+      height: 32px !important;
+      background: transparent !important;
+      border: none !important;
+      border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .maplibregl-ctrl-group button:last-child {
+      border-bottom: none !important;
+    }
+    .maplibregl-ctrl-group button:hover {
+      background: rgba(255,255,255,0.08) !important;
+    }
+    /* Icon colors */
+    .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+      filter: invert(0.7);
+    }
+    .maplibregl-ctrl-group button:hover .maplibregl-ctrl-icon {
+      filter: invert(0.55) sepia(1) saturate(2) hue-rotate(100deg) brightness(1.1);
+    }
+    /* Compass needle */
+    .maplibregl-ctrl-group button .maplibregl-ctrl-compass .maplibregl-ctrl-icon {
+      filter: invert(0.7);
+    }
+
+    /* Attribution — subtle */
+    .maplibregl-ctrl-attrib {
+      background: rgba(0,0,0,0.4) !important;
+      backdrop-filter: blur(8px);
+      border-radius: 4px;
+      font-size: 9px !important;
+      padding: 2px 6px !important;
+    }
+    .maplibregl-ctrl-attrib a {
+      color: var(--text-dim) !important;
+    }
+    .maplibregl-ctrl-attrib-button {
+      filter: invert(0.7);
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
 
   <div id="panel">
-    <div class="panel-header" id="filename">Loading...</div>
+    <div class="panel-header" id="panel-toggle">
+      <span id="filename">Loading...</span>
+      <svg class="chevron" width="12" height="12" viewBox="0 0 12 12" fill="none">
+        <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
 
+    <div id="panel-body">
     <div class="control-group">
       <label>Base Layer</label>
       <select id="basemap-select">
@@ -307,7 +397,7 @@
       <canvas id="colormap-preview" width="222" height="12"></canvas>
     </div>
 
-    <div class="control-group hidden" id="range-group">
+    <div class="control-group" id="range-group">
       <label>Value Range</label>
       <div class="range-row">
         <input type="number" id="min-value" step="any" value="0">
@@ -316,6 +406,7 @@
       </div>
       <div class="info-text" id="data-range-info"></div>
     </div>
+    </div><!-- /panel-body -->
   </div>
 
   <div id="loading-overlay" class="fullscreen-overlay">
@@ -327,6 +418,11 @@
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script>
+    document.getElementById("panel-toggle").addEventListener("click", function() {
+      document.getElementById("panel").classList.toggle("collapsed");
+    });
+  </script>
   <script type="module" src="./webview.js"></script>
 </body>
 </html>
