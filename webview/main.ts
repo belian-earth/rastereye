@@ -3,18 +3,17 @@
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 import { DecoderPool } from "@developmentseed/geotiff";
+import { CreateTexture } from "@developmentseed/deck.gl-raster/gpu-modules";
 import {
   getColormapLUT,
   COLORMAP_NAMES,
   drawColormapPreview,
 } from "./colormaps";
 
-// Workerless decoder pool — falls back to main-thread decoding.
-// Required because VS Code webview sandbox blocks Worker construction.
 const mainThreadPool = new DecoderPool({ size: 0 });
 
 // ---------------------------------------------------------------------------
-// Globals & types
+// Types & state
 // ---------------------------------------------------------------------------
 
 declare const maplibregl: any;
@@ -54,7 +53,13 @@ let nodataValue: number | null = null;
 let bandScales: number[] = [];
 let bandOffsets: number[] = [];
 let bandNames: string[] = [];
-let scalingActive = false; // cached result of hasScaling(), set once at load
+let scalingActive = false;
+let gpuDevice: any = null;
+
+// Layer version — bumped only when tile data must be re-fetched (band change).
+// Render-only changes (colormap, range, opacity) reuse cached tiles.
+let layerVersion = 0;
+let currentLayerId = "cog-layer-0";
 
 // ---------------------------------------------------------------------------
 // Basemap styles
@@ -98,17 +103,15 @@ const BASEMAP_STYLES: Record<string, any> = {
 };
 
 // ---------------------------------------------------------------------------
-// Pixel helpers (used in hot render loop — keep lean)
+// Helpers
 // ---------------------------------------------------------------------------
 
 function isNodata(v: number, nodata: number | null): boolean {
   return v === nodata || Number.isNaN(v);
 }
 
-/** Normalize a value to 0–255 and clamp */
-function toU8(val: number, vMin: number, invRange: number): number {
-  const n = (val - vMin) * invRange * 255;
-  return n < 0 ? 0 : n > 255 ? 255 : (n + 0.5) | 0; // fast round via bitwise
+function dnToScaled(dn: number, bandIdx: number): number {
+  return dn * (bandScales[bandIdx] ?? 1) + (bandOffsets[bandIdx] ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,13 +119,12 @@ function toU8(val: number, vMin: number, invRange: number): number {
 // ---------------------------------------------------------------------------
 
 function handleGeoTIFFLoad(tiff: any, opts: any): void {
-  if (geotiffObj) return; // already loaded
+  if (geotiffObj) return;
   geotiffObj = tiff;
 
   bandCount = tiff.count ?? 1;
   nodataValue = tiff.nodata ?? null;
 
-  // Read per-band scale/offset (scaled_value = DN * scale + offset)
   try {
     bandScales = tiff.scales ?? [];
     bandOffsets = tiff.offsets ?? [];
@@ -135,7 +137,6 @@ function handleGeoTIFFLoad(tiff: any, opts: any): void {
     (bandScales.some((s: number) => s !== 1) ||
       bandOffsets.some((o: number) => o !== 0));
 
-  // Extract band descriptions from GDALMetadata XML
   bandNames = [];
   try {
     const rawXml: string | null = tiff.cachedTags?.gdalMetadata ?? null;
@@ -154,7 +155,7 @@ function handleGeoTIFFLoad(tiff: any, opts: any): void {
       }
     }
   } catch {
-    // ignore parse errors
+    // ignore
   }
 
   console.log("[RasterEye] onGeoTIFFLoad:", {
@@ -166,7 +167,6 @@ function handleGeoTIFFLoad(tiff: any, opts: any): void {
     overviews: tiff.overviews?.length ?? 0,
   });
 
-  // Fit map to bounds
   const bounds = opts.geographicBounds;
   try {
     if (bounds) {
@@ -188,10 +188,8 @@ function handleGeoTIFFLoad(tiff: any, opts: any): void {
     console.warn("[RasterEye] Failed to fit bounds:", err);
   }
 
-  // Value range
   updateDefaultRange(tiff);
 
-  // Default to single band
   state.renderMode = "singleband";
   (document.getElementById("mode-select") as HTMLSelectElement).value =
     "singleband";
@@ -199,20 +197,12 @@ function handleGeoTIFFLoad(tiff: any, opts: any): void {
   populateBandSelectors(bandCount);
   updateControlVisibility();
   showLoading(false);
-
-  // Re-render with metadata-aware settings
-  updateLayer();
+  rebuildLayer();
 }
 
 // ---------------------------------------------------------------------------
-// Scaling & range helpers
+// Range helpers
 // ---------------------------------------------------------------------------
-
-function dnToScaled(dn: number, bandIdx: number): number {
-  const scale = bandScales[bandIdx] ?? 1;
-  const offset = bandOffsets[bandIdx] ?? 0;
-  return dn * scale + offset;
-}
 
 function setRange(min: number, max: number): void {
   state.valueMin = min;
@@ -221,7 +211,6 @@ function setRange(min: number, max: number): void {
   const maxEl = document.getElementById("max-value") as HTMLInputElement;
   minEl.value = formatNum(min);
   maxEl.value = formatNum(max);
-  // Step = 5% of range
   const step = Math.abs(max - min) / 20 || 0.01;
   const stepStr = step < 1 ? step.toPrecision(2) : String(Math.round(step));
   minEl.step = stepStr;
@@ -254,20 +243,18 @@ function updateDefaultRange(tiff: any): void {
 }
 
 // ---------------------------------------------------------------------------
-// Percentile computation (async, uses cached tile data)
+// Percentile computation
 // ---------------------------------------------------------------------------
 
 let cachedTileData: any = null;
 
 async function computePercentilesForBand(bandIdx: number): Promise<void> {
   if (!geotiffObj) return;
-
   try {
     if (!cachedTileData) {
       const tile = await geotiffObj.fetchTile(0, 0, { pool: mainThreadPool });
       cachedTileData = tile.array.data;
     }
-
     const nodata = geotiffObj.nodata;
     const pixelCount = cachedTileData.length / bandCount;
     const bi = Math.min(bandIdx, bandCount - 1);
@@ -278,120 +265,172 @@ async function computePercentilesForBand(bandIdx: number): Promise<void> {
       if (isNodata(dn, nodata)) continue;
       values.push(scalingActive ? dnToScaled(dn, bi) : dn);
     }
-
     if (values.length < 10) return;
 
     values.sort((a, b) => a - b);
     const p2 = values[Math.floor(values.length * 0.02)];
     const p98 = values[Math.floor(values.length * 0.98)];
-
     setRange(p2, p98);
-    updateLayer();
+    rerenderLayer(); // range changed — raw data already cached
   } catch (err) {
     console.warn("[RasterEye] Could not compute percentiles:", err);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Layer creation
+// Tile rendering — builds RGBA texture from raw tile data + current state.
+// Called by COGLayer's renderTile; reads state at render time so colormap,
+// range, and mode changes take effect without re-fetching tiles.
 // ---------------------------------------------------------------------------
 
-function updateLayer(): void {
-  if (!fileUrl && !geotiffObj) return;
+function buildTexture(
+  device: any,
+  data: any,
+  w: number,
+  h: number,
+  spp: number
+): any {
+  const pixelCount = w * h;
+  const nodata = nodataValue;
+  const scaled = scalingActive;
+  const vMin = state.valueMin;
+  const vMax = state.valueMax;
+  const range = vMax - vMin || 1;
+  const out = new Uint8Array(pixelCount * 4);
 
-  const src = geotiffObj || fileUrl;
+  if (state.renderMode === "singleband") {
+    const bi = Math.min(state.singleBand, spp - 1);
+    const bScale = scaled ? (bandScales[bi] ?? 1) : 1;
+    const bOffset = scaled ? (bandOffsets[bi] ?? 0) : 0;
+    const lut = getColormapLUT(state.colormap);
 
-  const baseProps: any = {
-    id: "cog-layer",
-    geotiff: src,
+    for (let i = 0; i < pixelCount; i++) {
+      const dn = data[i * spp + bi];
+      if (dn === nodata || dn !== dn) {
+        out[i * 4 + 3] = 0;
+        continue;
+      }
+      const frac = ((dn * bScale + bOffset - vMin) / range) * 255;
+      const n = frac < 0 ? 0 : frac > 255 ? 255 : (frac + 0.5) | 0;
+      out[i * 4] = lut[n * 4];
+      out[i * 4 + 1] = lut[n * 4 + 1];
+      out[i * 4 + 2] = lut[n * 4 + 2];
+      out[i * 4 + 3] = 255;
+    }
+  } else {
+    const ri = Math.min(state.bandR, spp - 1);
+    const gi = Math.min(state.bandG, spp - 1);
+    const bi = Math.min(state.bandB, spp - 1);
+    const sR = scaled ? (bandScales[ri] ?? 1) : 1;
+    const oR = scaled ? (bandOffsets[ri] ?? 0) : 0;
+    const sG = scaled ? (bandScales[gi] ?? 1) : 1;
+    const oG = scaled ? (bandOffsets[gi] ?? 0) : 0;
+    const sB = scaled ? (bandScales[bi] ?? 1) : 1;
+    const oB = scaled ? (bandOffsets[bi] ?? 0) : 0;
+
+    for (let i = 0; i < pixelCount; i++) {
+      const dnR = data[i * spp + ri];
+      if (dnR === nodata || dnR !== dnR) {
+        out[i * 4 + 3] = 0;
+        continue;
+      }
+      const vr = ((dnR * sR + oR - vMin) / range) * 255;
+      const vg = ((data[i * spp + gi] * sG + oG - vMin) / range) * 255;
+      const vb = ((data[i * spp + bi] * sB + oB - vMin) / range) * 255;
+      out[i * 4] = vr < 0 ? 0 : vr > 255 ? 255 : (vr + 0.5) | 0;
+      out[i * 4 + 1] = vg < 0 ? 0 : vg > 255 ? 255 : (vg + 0.5) | 0;
+      out[i * 4 + 2] = vb < 0 ? 0 : vb > 255 ? 255 : (vb + 0.5) | 0;
+      out[i * 4 + 3] = 255;
+    }
+  }
+
+  return device.createTexture({
+    data: out,
+    width: w,
+    height: h,
+    format: "rgba8unorm",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Layer management
+//
+// rebuildLayer() — creates a new COGLayer (new ID, re-fetches tiles).
+//   Called when: band selection changes, mode changes, file opens.
+//
+// rerenderLayer() — creates a COGLayer with same ID (reuses tile cache).
+//   Called when: colormap, range, opacity changes.
+// ---------------------------------------------------------------------------
+
+function makeCOGLayerProps(layerId: string): any {
+  return {
+    id: layerId,
+    geotiff: geotiffObj || fileUrl,
     opacity: state.opacity,
     pool: mainThreadPool,
     onGeoTIFFLoad: handleGeoTIFFLoad,
     onError: (err: any) => {
       console.error("[RasterEye] COGLayer error:", err);
     },
-  };
 
-  // Custom CPU pipeline — handles >4 bands, colormaps, band selection.
-  // State is read at render time so changes after onGeoTIFFLoad take effect.
+    // getTileData: fetch raw tile, cache the interleaved data for renderTile.
+    // This runs once per tile per layer version.
+    getTileData: async (image: any, options: any) => {
+      const device = options.device;
+      if (!gpuDevice) gpuDevice = device;
 
-  baseProps.getTileData = async (image: any, options: any) => {
-    try {
-      const tile = await image.fetchTile(options.x, options.y, {
-        signal: options.signal,
-      });
-      return {
-        width: tile.array.width,
-        height: tile.array.height,
-        data: tile.array.data,
-      };
-    } catch (err: any) {
-      console.error("[RasterEye] fetchTile FAILED:", err);
-      throw err;
-    }
-  };
+      try {
+        const tile = await image.fetchTile(options.x, options.y, {
+          signal: options.signal,
+        });
+        const data = tile.array.data;
+        const w = tile.array.width;
+        const h = tile.array.height;
+        const spp = Math.max(1, Math.round(data.length / (w * h)));
 
-  baseProps.renderTile = (
-    td: { width: number; height: number; data: any }
-  ) => {
-    const { width, height, data } = td;
-    if (!width || !height || !data) return new ImageData(1, 1);
-
-    const curMode = state.renderMode;
-    const vMin = state.valueMin;
-    const vMax = state.valueMax;
-    const invRange = 1 / (vMax - vMin || 1);
-    const nodata = nodataValue;
-    const scaled = scalingActive;
-
-    const pixelCount = width * height;
-    const dataSpp = Math.max(1, Math.round(data.length / pixelCount));
-    const imgData = new ImageData(width, height);
-    const rgba = imgData.data;
-
-    if (curMode === "singleband") {
-      const lut = getColormapLUT(state.colormap);
-      const bi = Math.min(state.singleBand, dataSpp - 1);
-      // Hoist scale/offset for this band outside the loop
-      const scale = scaled ? (bandScales[bi] ?? 1) : 1;
-      const offset = scaled ? (bandOffsets[bi] ?? 0) : 0;
-
-      for (let i = 0; i < pixelCount; i++) {
-        const dn = data[i * dataSpp + bi];
-        if (dn === nodata || dn !== dn) { rgba[i * 4 + 3] = 0; continue; }
-        const val = dn * scale + offset;
-        const n = toU8(val, vMin, invRange);
-        rgba[i * 4] = lut[n * 4];
-        rgba[i * 4 + 1] = lut[n * 4 + 1];
-        rgba[i * 4 + 2] = lut[n * 4 + 2];
-        rgba[i * 4 + 3] = 255;
+        // Return raw data + a pre-built texture for the initial render
+        return {
+          width: w,
+          height: h,
+          data, // raw interleaved band data (cached by TileLayer)
+          spp,
+          texture: buildTexture(device, data, w, h, spp),
+        };
+      } catch (err: any) {
+        console.error("[RasterEye] fetchTile FAILED:", err);
+        throw err;
       }
-    } else {
-      // 3-Band Composite — hoist per-band scale/offset
-      const ri = Math.min(state.bandR, dataSpp - 1);
-      const gi = Math.min(state.bandG, dataSpp - 1);
-      const bi = Math.min(state.bandB, dataSpp - 1);
-      const sR = scaled ? (bandScales[ri] ?? 1) : 1;
-      const oR = scaled ? (bandOffsets[ri] ?? 0) : 0;
-      const sG = scaled ? (bandScales[gi] ?? 1) : 1;
-      const oG = scaled ? (bandOffsets[gi] ?? 0) : 0;
-      const sB = scaled ? (bandScales[bi] ?? 1) : 1;
-      const oB = scaled ? (bandOffsets[bi] ?? 0) : 0;
+    },
 
-      for (let i = 0; i < pixelCount; i++) {
-        const dnR = data[i * dataSpp + ri];
-        if (dnR === nodata || dnR !== dnR) { rgba[i * 4 + 3] = 0; continue; }
-        rgba[i * 4] = toU8(dnR * sR + oR, vMin, invRange);
-        rgba[i * 4 + 1] = toU8(data[i * dataSpp + gi] * sG + oG, vMin, invRange);
-        rgba[i * 4 + 2] = toU8(data[i * dataSpp + bi] * sB + oB, vMin, invRange);
-        rgba[i * 4 + 3] = 255;
-      }
-    }
+    // renderTile: builds GPU pipeline from cached tile data.
+    // Reads current state so colormap/range/mode changes take effect instantly.
+    renderTile: (td: any) => {
+      if (!td.data || !gpuDevice) return new ImageData(1, 1);
 
-    return imgData;
+      // Rebuild texture from raw data with current state
+      const texture = buildTexture(gpuDevice, td.data, td.width, td.height, td.spp);
+      return [
+        { module: CreateTexture, props: { textureName: texture } },
+      ];
+    },
   };
+}
 
-  overlay.setProps({ layers: [new COGLayer(baseProps)] });
+function rebuildLayer(): void {
+  if (!fileUrl && !geotiffObj) return;
+  layerVersion++;
+  currentLayerId = `cog-layer-${layerVersion}`;
+  overlay.setProps({
+    layers: [new COGLayer(makeCOGLayerProps(currentLayerId))],
+  });
+}
+
+function rerenderLayer(): void {
+  if (!fileUrl && !geotiffObj) return;
+  // Same ID → TileLayer reuses cached tiles, only reruns renderTile
+  overlay.setProps({
+    layers: [new COGLayer(makeCOGLayerProps(currentLayerId))],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -406,12 +445,6 @@ function showLoading(show: boolean): void {
   document
     .getElementById("loading-overlay")!
     .classList.toggle("hidden", !show);
-}
-
-function showError(msg: string): void {
-  document.getElementById("error-box")!.textContent = msg;
-  document.getElementById("error-overlay")!.classList.remove("hidden");
-  showLoading(false);
 }
 
 function hideError(): void {
@@ -471,7 +504,6 @@ function updateControlVisibility(): void {
   document
     .getElementById("colormap-group")!
     .classList.toggle("hidden", !isSingleband);
-  // Range is always visible
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +516,7 @@ function setupControls(): void {
     .addEventListener("change", (e) => {
       state.basemap = (e.target as HTMLSelectElement).value;
       map.setStyle(BASEMAP_STYLES[state.basemap]);
-      map.once("styledata", () => updateLayer());
+      map.once("styledata", () => rerenderLayer());
     });
 
   const opSlider = document.getElementById(
@@ -496,7 +528,7 @@ function setupControls(): void {
     const pct = Math.round(state.opacity * 100);
     opLabel.textContent = `${pct}%`;
     opSlider.style.setProperty("--pct", `${pct}%`);
-    updateLayer();
+    rerenderLayer(); // opacity only — no re-fetch
   });
 
   document.getElementById("mode-select")!.addEventListener("change", (e) => {
@@ -504,7 +536,6 @@ function setupControls(): void {
       | "singleband"
       | "3band";
     updateControlVisibility();
-    // Recompute percentiles for the active band
     const activeBand =
       state.renderMode === "3band" ? state.bandR : state.singleBand;
     computePercentilesForBand(activeBand);
@@ -520,11 +551,10 @@ function setupControls(): void {
         (e.target as HTMLSelectElement).value,
         10
       );
-      // Recompute percentiles using the R band
       if (key === "bandR") {
         computePercentilesForBand(state.bandR);
       } else {
-        updateLayer();
+        rerenderLayer(); // G/B band change — reuse cached data
       }
     });
   }
@@ -544,7 +574,7 @@ function setupControls(): void {
     .addEventListener("change", (e) => {
       state.colormap = (e.target as HTMLSelectElement).value;
       updateColormapPreview();
-      updateLayer();
+      rerenderLayer(); // colormap only — no re-fetch
     });
 
   const minInput = document.getElementById("min-value") as HTMLInputElement;
@@ -552,7 +582,7 @@ function setupControls(): void {
   const onRangeChange = () => {
     state.valueMin = parseFloat(minInput.value) || 0;
     state.valueMax = parseFloat(maxInput.value) || 1;
-    updateLayer();
+    rerenderLayer(); // range only — no re-fetch
   };
   minInput.addEventListener("change", onRangeChange);
   maxInput.addEventListener("change", onRangeChange);
@@ -565,7 +595,6 @@ function setupControls(): void {
 // ---------------------------------------------------------------------------
 
 function init(): void {
-  // File URL from injected globals (webview) or query params (browser)
   const win = window as any;
   const params = new URLSearchParams(window.location.search);
   const paramFile = win.__RASTEREYE_FILE_URL__ || params.get("file");
@@ -606,7 +635,6 @@ function init(): void {
 
   setupControls();
 
-  // Force attribution collapsed on start
   map.once("load", () => {
     const attrib = document.querySelector(".maplibregl-ctrl-attrib");
     if (attrib) attrib.classList.remove("maplibregl-compact-show");
@@ -615,7 +643,7 @@ function init(): void {
   map.on("load", () => {
     if (fileUrl) {
       hideError();
-      updateLayer();
+      rebuildLayer();
     }
   });
 }

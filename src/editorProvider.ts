@@ -85,11 +85,11 @@ export class GeoTIFFEditorProvider
     const csp = `<meta http-equiv="Content-Security-Policy" content="
       default-src 'none';
       script-src ${webview.cspSource} https://unpkg.com 'unsafe-inline' 'wasm-unsafe-eval';
-      style-src 'unsafe-inline' https://unpkg.com;
+      style-src 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com;
       img-src ${webview.cspSource} https: data: blob: http://127.0.0.1:${serverPort};
       connect-src https: http://127.0.0.1:${serverPort};
       worker-src blob: ${webview.cspSource};
-      font-src https: data:;
+      font-src https://fonts.gstatic.com https: data:;
       child-src blob:;
     ">`;
     // Replace any existing CSP or insert after charset
