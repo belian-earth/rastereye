@@ -9,14 +9,20 @@ const MIME_TYPES: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
 };
 
+const STATIC_ROUTES: Record<string, string> = {
+  "/viewer": "viewer.html",
+  "/viewer.html": "viewer.html",
+  "/webview.js": "webview.js",
+  "/webview.js.map": "webview.js.map",
+};
+
 export class FileServer {
   private server: http.Server | null = null;
   private port = 0;
-  private files = new Map<string, string>(); // id → absolute filepath
+  private files = new Map<string, string>(); // id -> absolute filepath
   private distDir: string;
 
   constructor(extensionPath?: string) {
-    // dist/ is a sibling of src/ in the extension root
     this.distDir = extensionPath
       ? path.join(extensionPath, "dist")
       : path.join(__dirname, "..");
@@ -24,7 +30,6 @@ export class FileServer {
 
   async start(): Promise<void> {
     this.server = http.createServer((req, res) => {
-      // CORS headers
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
       res.setHeader(
@@ -45,28 +50,30 @@ export class FileServer {
       const url = new URL(req.url || "/", `http://127.0.0.1:${this.port}`);
       const pathname = url.pathname;
 
-      // Static assets: /viewer, /webview.js, /webview.js.map
-      if (pathname === "/viewer" || pathname === "/viewer.html") {
-        return this.serveStatic(res, "viewer.html");
-      }
-      if (pathname === "/webview.js") {
-        return this.serveStatic(res, "webview.js");
-      }
-      if (pathname === "/webview.js.map") {
-        return this.serveStatic(res, "webview.js.map");
+      // Static assets
+      const staticFile = STATIC_ROUTES[pathname];
+      if (staticFile) {
+        return this.serveStatic(res, staticFile);
       }
 
-      // GeoTIFF file serving (by ID) with range request support
-      const fileId = pathname.slice(1); // strip leading /
+      // GeoTIFF file serving (by base64url ID) with range request support
+      const fileId = pathname.slice(1);
       const filepath = this.files.get(fileId);
-
-      if (!filepath || !fs.existsSync(filepath)) {
+      if (!filepath) {
         res.writeHead(404);
         res.end("Not found");
         return;
       }
 
-      const stat = fs.statSync(filepath);
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(filepath);
+      } catch {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+
       const fileSize = stat.size;
       const range = req.headers.range;
 
@@ -112,11 +119,10 @@ export class FileServer {
     return `http://127.0.0.1:${this.port}/${id}`;
   }
 
-  /** Get the full viewer URL for a file */
-  getViewerUrl(filepath: string): string {
-    const fileUrl = this.registerFile(filepath);
-    const name = path.basename(filepath);
-    return `http://127.0.0.1:${this.port}/viewer?file=${encodeURIComponent(fileUrl)}&name=${encodeURIComponent(name)}`;
+  /** Unregister a file when the document is closed */
+  unregisterFile(filepath: string): void {
+    const id = Buffer.from(filepath).toString("base64url");
+    this.files.delete(id);
   }
 
   getPort(): number {
@@ -130,14 +136,18 @@ export class FileServer {
 
   private serveStatic(res: http.ServerResponse, filename: string): void {
     const filePath = path.join(this.distDir, filename);
-    if (!fs.existsSync(filePath)) {
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
       res.writeHead(404);
       res.end(`${filename} not found`);
       return;
     }
+
     const ext = path.extname(filename);
     const contentType = MIME_TYPES[ext] || "application/octet-stream";
-    const stat = fs.statSync(filePath);
     res.writeHead(200, {
       "Content-Type": contentType,
       "Content-Length": stat.size,

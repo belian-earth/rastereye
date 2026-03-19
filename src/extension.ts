@@ -15,5 +15,5 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  fileServer?.dispose();
+  // FileServer is disposed via context.subscriptions
 }

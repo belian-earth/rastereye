@@ -184,7 +184,7 @@
 
     .hidden { display: none !important; }
 
-    #loading-overlay {
+    .fullscreen-overlay {
       position: absolute;
       inset: 0;
       display: flex;
@@ -195,37 +195,25 @@
       backdrop-filter: blur(4px);
     }
 
-    #loading-box {
+    .glass-box {
       background: var(--panel-bg);
       backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-      padding: 16px 28px;
       border-radius: var(--panel-radius);
       box-shadow: var(--panel-shadow);
       font-size: 12px;
-      color: var(--text-bright);
       letter-spacing: 0.2px;
     }
 
-    #error-overlay {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 300;
-      background: rgba(0,0,0,0.5);
-      backdrop-filter: blur(4px);
+    #loading-box {
+      padding: 16px 28px;
+      color: var(--text-bright);
     }
 
     #error-box {
       background: rgba(90, 29, 29, 0.85);
-      backdrop-filter: blur(12px);
       padding: 16px 24px;
-      border-radius: var(--panel-radius);
       border: 1px solid rgba(190, 17, 0, 0.4);
-      box-shadow: var(--panel-shadow);
       max-width: 400px;
-      font-size: 12px;
       color: #f0a0a0;
     }
 
@@ -254,10 +242,10 @@
       padding-top: 2px;
     }
 
-    /* Band color indicators with accent tint */
-    .band-row span[style*="color:#f44"] { color: #e06060 !important; }
-    .band-row span[style*="color:#4f4"] { color: var(--accent) !important; }
-    .band-row span[style*="color:#48f"] { color: #6090d0 !important; }
+    /* Band color indicators */
+    .band-r { color: #e06060; }
+    .band-g { color: var(--accent); }
+    .band-b { color: #6090d0; }
   </style>
 </head>
 <body>
@@ -295,15 +283,15 @@
     <div class="control-group hidden" id="falsecolor-group">
       <label>RGB Bands</label>
       <div class="band-row">
-        <span style="color:#f44">R</span>
+        <span class="band-r">R</span>
         <select id="band-r"></select>
       </div>
       <div class="band-row">
-        <span style="color:#4f4">G</span>
+        <span class="band-g">G</span>
         <select id="band-g"></select>
       </div>
       <div class="band-row">
-        <span style="color:#48f">B</span>
+        <span class="band-b">B</span>
         <select id="band-b"></select>
       </div>
     </div>
@@ -330,12 +318,12 @@
     </div>
   </div>
 
-  <div id="loading-overlay">
-    <div id="loading-box">Loading GeoTIFF...</div>
+  <div id="loading-overlay" class="fullscreen-overlay">
+    <div id="loading-box" class="glass-box">Loading GeoTIFF...</div>
   </div>
 
-  <div id="error-overlay" class="hidden">
-    <div id="error-box"></div>
+  <div id="error-overlay" class="fullscreen-overlay hidden">
+    <div id="error-box" class="glass-box"></div>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>

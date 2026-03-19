@@ -30,7 +30,11 @@ export class GeoTIFFEditorProvider
   async openCustomDocument(
     uri: vscode.Uri
   ): Promise<vscode.CustomDocument> {
-    return { uri, dispose: () => {} };
+    const fsPath = uri.fsPath;
+    return {
+      uri,
+      dispose: () => this.fileServer.unregisterFile(fsPath),
+    };
   }
 
   async resolveCustomEditor(
