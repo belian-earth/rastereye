@@ -1,6 +1,6 @@
 # Makefile for RasterEye VS Code / Positron Extension
 
-.PHONY: all build package clean install rebuild watch help
+.PHONY: all build test package clean install rebuild help
 
 # Default target - install (if needed), build, and package
 all: node_modules build package
@@ -17,16 +17,15 @@ build: node_modules
 	@npm run build
 	@echo "✓ Build complete"
 
+# Run tests
+test: node_modules
+	@npm test
+
 # Package extension into .vsix file
 package:
 	@echo "Packaging extension..."
 	@npm run package
 	@echo "✓ Package created: rastereye-*.vsix"
-
-# Watch for changes (live rebuild)
-watch: node_modules
-	@echo "Watching for changes..."
-	@npm run watch
 
 # Clean build artifacts
 clean:
@@ -50,8 +49,8 @@ help:
 	@echo ""
 	@echo "  make              - Install (if needed), build, and package"
 	@echo "  make build        - Build extension + webview bundles"
+	@echo "  make test         - Run tests"
 	@echo "  make package      - Create .vsix package"
-	@echo "  make watch        - Watch mode (live rebuild on save)"
 	@echo "  make clean        - Remove build artifacts"
 	@echo "  make install      - Force reinstall npm dependencies"
 	@echo "  make rebuild      - Clean rebuild from scratch"

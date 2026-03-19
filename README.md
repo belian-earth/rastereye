@@ -1,5 +1,11 @@
 # RasterEye
 
+[![CI](https://github.com/belian-earth/rastereye/actions/workflows/ci.yml/badge.svg)](https://github.com/belian-earth/rastereye/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub issues](https://img.shields.io/github/issues/belian-earth/rastereye)](https://github.com/belian-earth/rastereye/issues)
+[![Version](https://img.shields.io/github/package-json/v/belian-earth/rastereye)](https://github.com/belian-earth/rastereye)
+[![GitHub stars](https://img.shields.io/github/stars/belian-earth/rastereye)](https://github.com/belian-earth/rastereye/stargazers)
+
 Quick GeoTIFF viewer for VS Code and Positron. Click a `.tif` file, see it on a map.
 
 ![RasterEye demo](docs/demo.gif)
@@ -46,8 +52,8 @@ Install the result: `code --install-extension rastereye-*.vsix`
 |---------|-------------|
 | `make` | Install, build, and package |
 | `make build` | Build extension + webview |
+| `make test` | Run tests |
 | `make package` | Create `.vsix` |
-| `make watch` | Live rebuild on save |
 | `make clean` | Remove build artifacts |
 | `make rebuild` | Clean rebuild from scratch |
 

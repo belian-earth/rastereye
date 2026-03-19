@@ -40,14 +40,18 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "vsce:package": "vsce package --no-dependencies",
     "package": "npm run vsce:package"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^2.19.0",
     "esbuild": "^0.24.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@deck.gl/core": "^9.2.7",
