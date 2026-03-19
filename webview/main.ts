@@ -86,8 +86,8 @@ const BASEMAP_STYLES: Record<string, any> = {
     "\u00a9 OpenStreetMap contributors \u00a9 CARTO"
   ),
   osm: makeRasterStyle(
-    ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-    "\u00a9 OpenStreetMap contributors"
+    ["https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png"],
+    "\u00a9 OpenStreetMap contributors \u00a9 CARTO"
   ),
   satellite: makeRasterStyle(
     [
@@ -471,6 +471,7 @@ function updateControlVisibility(): void {
   document
     .getElementById("colormap-group")!
     .classList.toggle("hidden", !isSingleband);
+  // Range is always visible
 }
 
 // ---------------------------------------------------------------------------
@@ -503,7 +504,10 @@ function setupControls(): void {
       | "singleband"
       | "3band";
     updateControlVisibility();
-    updateLayer();
+    // Recompute percentiles for the active band
+    const activeBand =
+      state.renderMode === "3band" ? state.bandR : state.singleBand;
+    computePercentilesForBand(activeBand);
   });
 
   for (const [id, key] of [
@@ -516,7 +520,12 @@ function setupControls(): void {
         (e.target as HTMLSelectElement).value,
         10
       );
-      updateLayer();
+      // Recompute percentiles using the R band
+      if (key === "bandR") {
+        computePercentilesForBand(state.bandR);
+      } else {
+        updateLayer();
+      }
     });
   }
 
