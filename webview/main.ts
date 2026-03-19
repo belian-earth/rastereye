@@ -2,6 +2,11 @@
 
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
+import { DecoderPool } from "@developmentseed/geotiff";
+
+// Workerless decoder pool — falls back to main-thread decoding.
+// Required because VS Code webview sandbox blocks Worker construction.
+const mainThreadPool = new DecoderPool({ size: 0 });
 import {
   getColormapLUT,
   COLORMAP_NAMES,
@@ -49,6 +54,7 @@ let bandCount = 0;
 let nodataValue: number | null = null;
 let bandScales: number[] = [];  // per-band scale factors (default 1)
 let bandOffsets: number[] = []; // per-band offsets (default 0)
+let bandNames: string[] = [];   // per-band descriptions (if available)
 
 // ---------------------------------------------------------------------------
 // Basemap styles
@@ -112,8 +118,33 @@ function handleGeoTIFFLoad(tiff: any, opts: any): void {
     bandOffsets = [];
   }
 
+  // Extract band descriptions from GDALMetadata XML or ImageDescription tag
+  bandNames = [];
+  try {
+    const rawXml: string | null = tiff.cachedTags?.gdalMetadata ?? null;
+    if (rawXml) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(rawXml, "text/xml");
+      // Band descriptions: <Item name="DESCRIPTION" sample="0">B01</Item>
+      const items = doc.querySelectorAll('Item[name="DESCRIPTION"]');
+      if (items.length > 0) {
+        const names = new Array(bandCount).fill("");
+        items.forEach((item) => {
+          const sample = item.getAttribute("sample");
+          if (sample != null) {
+            names[parseInt(sample, 10)] = item.textContent ?? "";
+          }
+        });
+        bandNames = names;
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+
   console.log("[RasterEye] onGeoTIFFLoad:", {
     bands: bandCount,
+    bandNames,
     nodata: nodataValue,
     scales: bandScales,
     offsets: bandOffsets,
@@ -177,13 +208,18 @@ function hasScaling(): boolean {
 function setRange(min: number, max: number): void {
   state.valueMin = min;
   state.valueMax = max;
-  (document.getElementById("min-value") as HTMLInputElement).value =
-    formatNum(min);
-  (document.getElementById("max-value") as HTMLInputElement).value =
-    formatNum(max);
+  const minEl = document.getElementById("min-value") as HTMLInputElement;
+  const maxEl = document.getElementById("max-value") as HTMLInputElement;
+  minEl.value = formatNum(min);
+  maxEl.value = formatNum(max);
+  // Set step to 1% of range so arrow keys give useful increments
+  const step = Math.abs(max - min) / 20 || 0.01;
+  const stepStr = step < 1 ? step.toPrecision(2) : String(Math.round(step));
+  minEl.step = stepStr;
+  maxEl.step = stepStr;
   const label = hasScaling() ? "Scaled range" : "Display range";
   document.getElementById("data-range-info")!.textContent =
-    `${label}: ${formatNum(min)} \u2013 ${formatNum(max)}`;
+    `${label}: ${formatNum(min)} \u2192 ${formatNum(max)}`;
 }
 
 function updateDefaultRange(tiff: any): void {
@@ -208,24 +244,35 @@ function updateDefaultRange(tiff: any): void {
   setRange(fallbackMin, fallbackMax);
 
   // Compute 2nd/98th percentile from the first tile (async)
-  computePercentilesFromTile(tiff);
+  computePercentilesForBand(state.singleBand);
 }
 
-async function computePercentilesFromTile(tiff: any): Promise<void> {
-  try {
-    const tile = await tiff.fetchTile(0, 0);
-    const data = tile.array.data;
-    const spp = tiff.count ?? 1;
-    const pixelCount = data.length / spp;
-    const nodata = tiff.nodata;
-    const scaled = hasScaling();
+// Cache tile (0,0) data so band switches don't re-fetch
+let cachedTileData: any = null;
+let cachedTileSpp = 0;
+let cachedTilePixelCount = 0;
 
-    // Extract band 0 values (scaled if available), excluding nodata/NaN
+async function computePercentilesForBand(bandIdx: number): Promise<void> {
+  if (!geotiffObj) return;
+
+  try {
+    // Fetch tile (0,0) once, reuse for all bands
+    if (!cachedTileData) {
+      const tile = await geotiffObj.fetchTile(0, 0, { pool: mainThreadPool });
+      cachedTileData = tile.array.data;
+      cachedTileSpp = geotiffObj.count ?? 1;
+      cachedTilePixelCount = cachedTileData.length / cachedTileSpp;
+    }
+
+    const nodata = geotiffObj.nodata;
+    const scaled = hasScaling();
+    const bi = Math.min(bandIdx, cachedTileSpp - 1);
+
     const values: number[] = [];
-    for (let i = 0; i < pixelCount; i++) {
-      const dn = data[i * spp]; // first band
+    for (let i = 0; i < cachedTilePixelCount; i++) {
+      const dn = cachedTileData[i * cachedTileSpp + bi];
       if (dn === nodata || dn !== dn) continue;
-      values.push(scaled ? dnToScaled(dn, 0) : dn);
+      values.push(scaled ? dnToScaled(dn, bi) : dn);
     }
 
     if (values.length < 10) return;
@@ -235,7 +282,7 @@ async function computePercentilesFromTile(tiff: any): Promise<void> {
     const p98 = values[Math.floor(values.length * 0.98)];
 
     console.log(
-      `[RasterEye] Percentiles: p2=${p2}, p98=${p98} (${values.length} pixels, scaled=${scaled})`
+      `[RasterEye] Band ${bandIdx} percentiles: p2=${p2}, p98=${p98} (${values.length} pixels)`
     );
     setRange(p2, p98);
     updateLayer();
@@ -259,6 +306,7 @@ function updateLayer(): void {
     id: "cog-layer",
     geotiff: src,
     opacity: state.opacity,
+    pool: mainThreadPool,
     onGeoTIFFLoad: handleGeoTIFFLoad,
     onError: (err: any) => {
       console.error("[RasterEye] COGLayer error:", err);
@@ -388,7 +436,8 @@ function populateBandSelectors(count: number): void {
     for (let b = 0; b < count; b++) {
       const opt = document.createElement("option");
       opt.value = String(b);
-      opt.textContent = `Band ${b + 1}`;
+      const name = bandNames[b];
+      opt.textContent = name ? `${b + 1}: ${name}` : `Band ${b + 1}`;
       sel.appendChild(opt);
     }
   }
@@ -457,7 +506,9 @@ function setupControls(): void {
   const opLabel = document.getElementById("opacity-value")!;
   opSlider.addEventListener("input", () => {
     state.opacity = parseFloat(opSlider.value);
-    opLabel.textContent = `${Math.round(state.opacity * 100)}%`;
+    const pct = Math.round(state.opacity * 100);
+    opLabel.textContent = `${pct}%`;
+    opSlider.style.setProperty("--pct", `${pct}%`);
     updateLayer();
   });
 
@@ -488,7 +539,8 @@ function setupControls(): void {
         (e.target as HTMLSelectElement).value,
         10
       );
-      updateLayer();
+      // Recompute percentiles for the new band (async, updates range + re-renders)
+      computePercentilesForBand(state.singleBand);
     });
 
   document
@@ -519,10 +571,17 @@ function setupControls(): void {
 function init(): void {
   console.log("[RasterEye] init() starting");
 
+  // File URL comes from either:
+  // 1. Injected globals (VS Code webview) — set by editorProvider
+  // 2. Query params (standalone browser) — set by fileServer viewer URL
+  const win = window as any;
+  const injectedFile = win.__RASTEREYE_FILE_URL__;
+  const injectedName = win.__RASTEREYE_FILENAME__;
+
   const params = new URLSearchParams(window.location.search);
-  const paramFile = params.get("file");
+  const paramFile = injectedFile || params.get("file");
   const paramName =
-    params.get("name") || paramFile?.split("/").pop() || "GeoTIFF";
+    injectedName || params.get("name") || paramFile?.split("/").pop() || "GeoTIFF";
 
   if (paramFile) {
     fileUrl = paramFile;
@@ -530,6 +589,8 @@ function init(): void {
     if (el) {
       el.textContent = paramName;
       el.title = paramName;
+    }
+    if (!injectedFile) {
       document.title = `RasterEye - ${paramName}`;
     }
   }
