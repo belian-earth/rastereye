@@ -4,6 +4,7 @@ node_modules/**
 .vscode/**
 .claude/**
 .github/**
+docs/**
 
 tsconfig.json
 esbuild.mjs
