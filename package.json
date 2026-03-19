@@ -30,7 +30,10 @@
             "filenamePattern": "*.tiff"
           },
           {
-            "filenamePattern": "*.geotiff"
+            "filenamePattern": "*.TIF"
+          },
+          {
+            "filenamePattern": "*.TIFF"
           }
         ],
         "priority": "default"
