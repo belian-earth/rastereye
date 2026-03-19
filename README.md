@@ -18,7 +18,7 @@ Quick GeoTIFF viewer for VS Code and Positron. Click a `.tif` file, see it on a 
 
 ## Install
 
-Download the latest `.vsix` from [Releases](https://github.com/h-a-graham/rastereye/releases), then:
+Download the latest `.vsix` from [Releases](https://github.com/belian-earth/rastereye/releases), then:
 
 ```bash
 code --install-extension rastereye-*.vsix
@@ -30,7 +30,7 @@ Or via the UI: Extensions sidebar > `...` > *Install from VSIX*.
 ## Build from Source
 
 ```bash
-git clone https://github.com/h-a-graham/rastereye.git
+git clone https://github.com/belian-earth/rastereye.git
 cd rastereye
 make              # installs deps, builds, and packages
 ```
