@@ -5,92 +5,181 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RasterEye</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --accent: #74ac90;
+      --panel-bg: rgba(20, 20, 20, 0.7);
+      --panel-radius: 10px;
+      --panel-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      --input-bg: rgba(255, 255, 255, 0.08);
+      --input-border: rgba(255, 255, 255, 0.12);
+      --input-hover: rgba(255, 255, 255, 0.14);
+      --text: #ccc;
+      --text-dim: #888;
+      --text-bright: #eee;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       overflow: hidden;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 13px;
-      color: #ccc;
-      background: #1e1e1e;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 11px;
+      color: var(--text);
+      background: #1b1b1b;
+      user-select: none;
     }
 
     #map { position: absolute; inset: 0; }
 
     #panel {
       position: absolute;
-      top: 10px;
-      right: 10px;
-      width: 260px;
-      background: rgba(37, 37, 38, 0.95);
-      border: 1px solid #333;
-      border-radius: 6px;
-      padding: 12px;
+      top: 12px;
+      right: 12px;
+      width: 250px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-radius: var(--panel-radius);
+      box-shadow: var(--panel-shadow);
+      padding: 14px;
       z-index: 100;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-      max-height: calc(100vh - 20px);
+      max-height: calc(100vh - 24px);
       overflow-y: auto;
-      backdrop-filter: blur(8px);
+      overflow-x: hidden;
+    }
+
+    /* Scrollbar */
+    #panel::-webkit-scrollbar { width: 4px; }
+    #panel::-webkit-scrollbar-track { background: transparent; }
+    #panel::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.12);
+      border-radius: 2px;
     }
 
     .panel-header {
       font-weight: 600;
-      font-size: 13px;
-      margin-bottom: 12px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid #333;
+      font-size: 12px;
+      color: var(--text-bright);
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      letter-spacing: 0.2px;
     }
 
-    .control-group { margin-bottom: 10px; }
+    .control-group {
+      margin-bottom: 12px;
+    }
 
     .control-group label {
       display: block;
-      font-size: 11px;
+      font-size: 10px;
+      font-weight: 500;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      opacity: 0.7;
-      margin-bottom: 4px;
+      color: var(--text-dim);
+      margin-bottom: 6px;
     }
 
     select, input[type="number"] {
       width: 100%;
-      background: #3c3c3c;
-      color: #ccc;
-      border: 1px solid #555;
-      border-radius: 3px;
-      padding: 4px 6px;
-      font-size: 12px;
+      background: var(--input-bg);
+      color: var(--text);
+      border: 1px solid var(--input-border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 11px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    select:hover, input[type="number"]:hover {
+      background: var(--input-hover);
+    }
+    select:focus, input[type="number"]:focus {
+      border-color: var(--accent);
+    }
+    select option {
+      background: #1a1a1a;
+      color: var(--text);
     }
 
+    /* Custom range slider (a5view style) */
     input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
       width: 100%;
-      margin: 4px 0;
-      accent-color: #007acc;
+      height: 4px;
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+      background: linear-gradient(to right, var(--accent) var(--pct, 100%), rgba(255,255,255,0.12) var(--pct, 100%));
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid rgba(20,20,20,0.8);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+      transition: transform 0.15s;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid rgba(20,20,20,0.8);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    }
+    input[type="range"]::-moz-range-track {
+      height: 4px; border-radius: 2px; border: none;
+      background: rgba(255,255,255,0.12);
+    }
+    input[type="range"]::-moz-range-progress {
+      height: 4px; border-radius: 2px;
+      background: var(--accent);
     }
 
-    .slider-row { display: flex; align-items: center; gap: 8px; }
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
     .slider-row input[type="range"] { flex: 1; }
     .slider-row span {
       font-size: 11px;
       min-width: 36px;
       text-align: right;
       font-variant-numeric: tabular-nums;
+      color: var(--accent);
+      font-weight: 500;
     }
 
-    .range-row { display: flex; gap: 6px; align-items: center; }
+    .range-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
     .range-row input { flex: 1; }
-    .range-row span { font-size: 11px; opacity: 0.6; }
+    .range-row span {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
 
     #colormap-preview {
       width: 100%;
-      height: 14px;
-      border-radius: 3px;
-      margin-top: 4px;
-      border: 1px solid #555;
+      height: 12px;
+      border-radius: 4px;
+      margin-top: 6px;
+      border: 1px solid var(--input-border);
     }
 
     .hidden { display: none !important; }
@@ -102,15 +191,19 @@
       align-items: center;
       justify-content: center;
       z-index: 300;
-      background: rgba(0,0,0,0.4);
+      background: rgba(0,0,0,0.5);
+      backdrop-filter: blur(4px);
     }
 
     #loading-box {
-      background: #252526;
-      padding: 16px 24px;
-      border-radius: 6px;
-      border: 1px solid #333;
-      font-size: 13px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      padding: 16px 28px;
+      border-radius: var(--panel-radius);
+      box-shadow: var(--panel-shadow);
+      font-size: 12px;
+      color: var(--text-bright);
+      letter-spacing: 0.2px;
     }
 
     #error-overlay {
@@ -120,23 +213,51 @@
       align-items: center;
       justify-content: center;
       z-index: 300;
-      background: rgba(0,0,0,0.4);
+      background: rgba(0,0,0,0.5);
+      backdrop-filter: blur(4px);
     }
 
     #error-box {
-      background: #5a1d1d;
+      background: rgba(90, 29, 29, 0.85);
+      backdrop-filter: blur(12px);
       padding: 16px 24px;
-      border-radius: 6px;
-      border: 1px solid #be1100;
+      border-radius: var(--panel-radius);
+      border: 1px solid rgba(190, 17, 0, 0.4);
+      box-shadow: var(--panel-shadow);
       max-width: 400px;
-      font-size: 13px;
+      font-size: 12px;
+      color: #f0a0a0;
     }
 
-    .band-row { display: flex; gap: 6px; margin-bottom: 4px; align-items: center; }
-    .band-row span { font-size: 11px; min-width: 16px; font-weight: 600; }
+    .band-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 4px;
+      align-items: center;
+    }
+    .band-row span {
+      font-size: 11px;
+      min-width: 16px;
+      font-weight: 600;
+    }
     .band-row select { flex: 1; }
 
-    .info-text { font-size: 11px; opacity: 0.6; margin-top: 4px; }
+    .info-text {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-top: 6px;
+      letter-spacing: 0.2px;
+    }
+
+    /* Separator between control groups */
+    .control-group + .control-group {
+      padding-top: 2px;
+    }
+
+    /* Band color indicators with accent tint */
+    .band-row span[style*="color:#f44"] { color: #e06060 !important; }
+    .band-row span[style*="color:#4f4"] { color: var(--accent) !important; }
+    .band-row span[style*="color:#48f"] { color: #6090d0 !important; }
   </style>
 </head>
 <body>
@@ -158,7 +279,7 @@
     <div class="control-group">
       <label>Opacity</label>
       <div class="slider-row">
-        <input type="range" id="opacity-slider" min="0" max="1" step="0.01" value="1">
+        <input type="range" id="opacity-slider" min="0" max="1" step="0.01" value="1" style="--pct:100%">
         <span id="opacity-value">100%</span>
       </div>
     </div>
@@ -195,7 +316,7 @@
     <div class="control-group hidden" id="colormap-group">
       <label>Colormap</label>
       <select id="colormap-select"></select>
-      <canvas id="colormap-preview" width="236" height="14"></canvas>
+      <canvas id="colormap-preview" width="222" height="12"></canvas>
     </div>
 
     <div class="control-group hidden" id="range-group">
