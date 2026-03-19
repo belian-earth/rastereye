@@ -1,16 +1,19 @@
 src/**
 webview/**
 node_modules/**
+test/**
 .vscode/**
 .claude/**
 .github/**
 docs/**
 
 tsconfig.json
+vitest.config.ts
 esbuild.mjs
 .gitignore
 Makefile
 
 *.tif
 *.tiff
+*.mp4
 **/*.map
