@@ -59,6 +59,10 @@ Install the result: `code --install-extension rastereye-*.vsix`
 
 </details>
 
+## Acknowledgements
+
+Built on [deck.gl-raster](https://github.com/developmentseed/deck.gl-raster) by Development Seed, [deck.gl](https://deck.gl) by Vis.gl, [MapLibre GL JS](https://maplibre.org), and [geotiff.js](https://geotiffjs.github.io).
+
 ## License
 
 MIT
