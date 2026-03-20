@@ -20,7 +20,7 @@ Quick GeoTIFF viewer for VS Code and Positron. Click a `.tif` file, see it on a 
 - Scale/offset and band description metadata from GDAL tags
 - Base layers: Light, Dark, OSM Voyager, Satellite
 - Opacity slider, collapsible control panel
-- Auto CRS reprojection, COG + standard tiled GeoTIFF support
+- Auto CRS reprojection, COG + standard (tiled and stripped) GeoTIFF support
 
 ## Install
 
