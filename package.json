@@ -65,6 +65,7 @@
     "@developmentseed/deck.gl-geotiff": "^0.3.0",
     "@developmentseed/deck.gl-raster": "^0.3.0",
     "@luma.gl/core": "^9.2.6",
-    "@luma.gl/webgl": "^9.2.6"
+    "@luma.gl/webgl": "^9.2.6",
+    "geotiff": "^3.0.5"
   }
 }
