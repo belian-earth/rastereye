@@ -1,8 +1,12 @@
 /// Tiled GeoTIFF rendering via COGLayer.
+///
+/// Both single-band and 3-band composite use a GPU pipeline: r32float band
+/// textures with GDAL scale/offset baked in on CPU during extraction, then
+/// nodata-filter / rescale / (colormap or composite) on the GPU. Colormap,
+/// range, and opacity changes don't trigger any CPU work on cached tiles.
 
 import { COGLayer } from "@developmentseed/deck.gl-geotiff";
 import { DecoderPool } from "@developmentseed/geotiff";
-import { CreateTexture } from "@developmentseed/deck.gl-raster/gpu-modules";
 import {
   state, overlay, fileUrl, geotiffObj, bandCount, nodataValue,
   bandScales, bandOffsets, scalingActive, gpuDevice,
@@ -10,15 +14,23 @@ import {
   setBandOffsets, setBandNames, setScalingActive, setGpuDevice,
   map,
 } from "./state";
-import { renderInterleavedToRGBA } from "./render";
 import { showLoading } from "./helpers";
-import { setRange } from "./range";
-import { dnToScaled } from "./helpers";
-import { computePercentilesForBand } from "./percentiles";
+import {
+  buildBandTexture, buildRgbaBandsTexture,
+  buildSinglebandPipeline, build3bandPipeline,
+  getColormapTexture,
+} from "./gpu-pipeline";
 import { populateBandSelectors, updateControlVisibility } from "./ui";
 import { updateDefaultRange } from "./tiled-range";
 
-export const mainThreadPool = new DecoderPool({ size: 0 });
+/// Shared main-thread decoder pool. Tile decompression runs synchronously on
+/// the main thread (worker-backed pools were tried but the perceived UI
+/// latency was worse — see Apr 2026 discussion).
+let decoderPool: any = null;
+export function getDecoderPool(): any {
+  if (!decoderPool) decoderPool = new DecoderPool({ size: 0 });
+  return decoderPool;
+}
 
 // Layer versioning for cache management
 let layerVersion = 0;
@@ -107,25 +119,8 @@ export function handleGeoTIFFLoad(tiff: any, opts: any): void {
   rebuildLayer();
 }
 
-// ---------------------------------------------------------------------------
-// Texture building (CPU normalize → GPU texture)
-// ---------------------------------------------------------------------------
-
-function buildTexture(
-  device: any,
-  data: any,
-  w: number,
-  h: number,
-  spp: number
-): any {
-  const out = renderInterleavedToRGBA(data, w, h, spp);
-  return device.createTexture({
-    data: out,
-    width: w,
-    height: h,
-    format: "rgba8unorm",
-  });
-}
+// Cached colormap sprite texture, populated lazily on first GPU tile render.
+let colormapTexture: any = null;
 
 // ---------------------------------------------------------------------------
 // Layer management
@@ -136,15 +131,17 @@ function makeCOGLayerProps(layerId: string): any {
     id: layerId,
     geotiff: geotiffObj || fileUrl,
     opacity: state.opacity,
-    pool: mainThreadPool,
+    pool: getDecoderPool(),
     onGeoTIFFLoad: handleGeoTIFFLoad,
     onError: (err: any) => {
       console.error("[RasterEye] COGLayer error:", err);
     },
 
     getTileData: async (image: any, options: any) => {
-      const device = options.device;
-      if (!gpuDevice) setGpuDevice(device);
+      if (!gpuDevice) setGpuDevice(options.device);
+      if (!colormapTexture) {
+        colormapTexture = await getColormapTexture(options.device);
+      }
 
       try {
         const tile = await image.fetchTile(options.x, options.y, {
@@ -155,13 +152,20 @@ function makeCOGLayerProps(layerId: string): any {
         const h = tile.array.height;
         const spp = Math.max(1, Math.round(data.length / (w * h)));
 
-        return {
-          width: w,
-          height: h,
-          data,
-          spp,
-          texture: buildTexture(device, data, w, h, spp),
-        };
+        if (state.renderMode === "singleband") {
+          const texture = buildBandTexture(
+            options.device, data, w, h, spp, state.singleBand,
+          );
+          return { width: w, height: h, byteLength: w * h * 4, texture };
+        }
+
+        // 3-band composite: upload R/G/B + alpha as a single rgba32float
+        // texture. One sampler, one upload — same shape as single-band.
+        const texture = buildRgbaBandsTexture(
+          options.device, data, w, h, spp,
+          state.bandR, state.bandG, state.bandB,
+        );
+        return { width: w, height: h, byteLength: w * h * 16, texture, mode: "3band" };
       } catch (err: any) {
         console.error("[RasterEye] fetchTile FAILED:", err);
         throw err;
@@ -169,11 +173,26 @@ function makeCOGLayerProps(layerId: string): any {
     },
 
     renderTile: (td: any) => {
-      if (!td.data || !gpuDevice) return new ImageData(1, 1);
-      const texture = buildTexture(gpuDevice, td.data, td.width, td.height, td.spp);
-      return [
-        { module: CreateTexture, props: { textureName: texture } },
-      ];
+      if (!gpuDevice || !td.texture) return null;
+      if (td.mode === "3band") {
+        return { renderPipeline: build3bandPipeline(td.texture) };
+      }
+      if (colormapTexture) {
+        return {
+          renderPipeline: buildSinglebandPipeline(td.texture, colormapTexture),
+        };
+      }
+      return null;
+    },
+
+    updateTriggers: {
+      renderTile: [
+        state.renderMode,
+        state.colormap,
+        state.colormapReversed,
+        state.valueMin,
+        state.valueMax,
+      ],
     },
   };
 }

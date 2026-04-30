@@ -16,4 +16,5 @@ Makefile
 *.tif
 *.tiff
 *.mp4
+*.zarr/
 **/*.map

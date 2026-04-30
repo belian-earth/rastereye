@@ -7,8 +7,7 @@ import {
 } from "./state";
 import { hideError } from "./helpers";
 import { updateColormapPreview, updateControlVisibility, populateColormapSelector } from "./ui";
-import { rerenderLayer } from "./layers";
-import { rebuildLayer } from "./tiled";
+import { rerenderLayer, rebuildLayer } from "./layers";
 import { probeAndLoad } from "./strip";
 import { computePercentilesForBand } from "./percentiles";
 
@@ -39,14 +38,15 @@ function setupControls(): void {
     rerenderLayer();
   });
 
-  document.getElementById("mode-select")!.addEventListener("change", (e) => {
+  document.getElementById("mode-select")!.addEventListener("change", async (e) => {
     state.renderMode = (e.target as HTMLSelectElement).value as
       | "singleband"
       | "3band";
     updateControlVisibility();
     const activeBand =
       state.renderMode === "3band" ? state.bandR : state.singleBand;
-    computePercentilesForBand(activeBand);
+    await computePercentilesForBand(activeBand);
+    rebuildLayer();
   });
 
   for (const [id, key] of [
@@ -54,33 +54,43 @@ function setupControls(): void {
     ["band-g", "bandG"],
     ["band-b", "bandB"],
   ] as const) {
-    document.getElementById(id)!.addEventListener("change", (e) => {
+    document.getElementById(id)!.addEventListener("change", async (e) => {
       (state as any)[key] = parseInt(
         (e.target as HTMLSelectElement).value,
         10
       );
       if (key === "bandR") {
-        computePercentilesForBand(state.bandR);
-      } else {
-        rerenderLayer();
+        await computePercentilesForBand(state.bandR);
       }
+      // 3-band textures are per-channel: changing any of bandR/G/B requires
+      // re-fetching tiles, not just re-emitting the pipeline.
+      rebuildLayer();
     });
   }
 
   document
     .getElementById("band-single")!
-    .addEventListener("change", (e) => {
+    .addEventListener("change", async (e) => {
       state.singleBand = parseInt(
         (e.target as HTMLSelectElement).value,
         10
       );
-      computePercentilesForBand(state.singleBand);
+      await computePercentilesForBand(state.singleBand);
+      rebuildLayer();
     });
 
   document
     .getElementById("colormap-select")!
     .addEventListener("change", (e) => {
       state.colormap = (e.target as HTMLSelectElement).value;
+      updateColormapPreview();
+      rerenderLayer();
+    });
+
+  document
+    .getElementById("colormap-reversed")!
+    .addEventListener("change", (e) => {
+      state.colormapReversed = (e.target as HTMLInputElement).checked;
       updateColormapPreview();
       rerenderLayer();
     });

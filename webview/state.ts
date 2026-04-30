@@ -9,6 +9,7 @@ export interface ViewerState {
   bandB: number;
   singleBand: number;
   colormap: string;
+  colormapReversed: boolean;
   valueMin: number;
   valueMax: number;
 }
@@ -22,6 +23,7 @@ export const state: ViewerState = {
   bandB: 2,
   singleBand: 0,
   colormap: "viridis",
+  colormapReversed: false,
   valueMin: 0,
   valueMax: 255,
 };

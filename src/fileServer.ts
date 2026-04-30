@@ -91,13 +91,13 @@ export class FileServer {
           "Content-Length": chunkSize,
           "Content-Type": "application/octet-stream",
         });
-        fs.createReadStream(filepath, { start, end }).pipe(res);
+        pipeFile(fs.createReadStream(filepath, { start, end }), res);
       } else {
         res.writeHead(200, {
           "Content-Length": fileSize,
           "Content-Type": "application/octet-stream",
         });
-        fs.createReadStream(filepath).pipe(res);
+        pipeFile(fs.createReadStream(filepath), res);
       }
     });
 
@@ -153,6 +153,19 @@ export class FileServer {
       "Content-Length": stat.size,
       "Cache-Control": "no-cache",
     });
-    fs.createReadStream(filePath).pipe(res);
+    pipeFile(fs.createReadStream(filePath), res);
   }
+}
+
+/** Pipe a file stream to a response, swallowing the EPIPE / aborted-request
+ *  errors that occur when the client (e.g. an aborted tile fetch) drops
+ *  mid-stream. Without these handlers Node escalates the error to SIGPIPE. */
+function pipeFile(
+  stream: fs.ReadStream,
+  res: http.ServerResponse,
+): void {
+  const cleanup = () => stream.destroy();
+  res.on("close", cleanup);
+  stream.on("error", () => res.destroy());
+  stream.pipe(res);
 }
