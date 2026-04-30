@@ -40,7 +40,7 @@ export function updateColormapPreview(): void {
   const canvas = document.getElementById(
     "colormap-preview"
   ) as HTMLCanvasElement;
-  if (canvas) drawColormapPreview(canvas, state.colormap);
+  if (canvas) drawColormapPreview(canvas, state.colormap, state.colormapReversed);
 }
 
 export function updateControlVisibility(): void {

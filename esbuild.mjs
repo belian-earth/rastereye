@@ -33,7 +33,7 @@ const extensionConfig = {
   minify: !isWatch,
 };
 
-// Webview bundle (browser / ESM — needed for top-level await in deps)
+// Webview bundle (browser / ESM — needed for top-level await in deps).
 const webviewConfig = {
   entryPoints: ["webview/main.ts"],
   bundle: true,
@@ -47,10 +47,10 @@ const webviewConfig = {
     "process.env.NODE_ENV": '"production"',
   },
   alias: {
-    http: "./webview/shims/empty.js",
-    https: "./webview/shims/empty.js",
-    url: "./webview/shims/empty.js",
     lerc: "./webview/shims/empty.js",
+  },
+  loader: {
+    ".png": "binary",
   },
 };
 

@@ -72,6 +72,18 @@ export async function probeAndLoad(
     const tiff = await geotiffFromUrl(url);
     const image = await tiff.getImage();
 
+    // VS Code activates this editor on filename pattern alone, so we land
+    // here for any *.tif. Without geo metadata our renderers either silently
+    // misplace the image (strip path) or hit an opaque CRS-parse error
+    // inside COGLayer (tiled path); short-circuit with a clear message.
+    const geoKeys = image.getGeoKeys();
+    if (!geoKeys || Object.keys(geoKeys).length === 0) {
+      showError(
+        "This TIFF has no geographic metadata. RasterEye is for georeferenced rasters — open it with the default image viewer instead.",
+      );
+      return;
+    }
+
     if (image.isTiled) {
       onTiled();
     } else {

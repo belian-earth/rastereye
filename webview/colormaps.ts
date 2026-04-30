@@ -194,7 +194,8 @@ export const COLORMAP_NAMES = Object.keys(COLORMAP_DEFS);
 /** Draw a colormap preview onto a canvas element */
 export function drawColormapPreview(
   canvas: HTMLCanvasElement,
-  name: string
+  name: string,
+  reversed = false,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -205,7 +206,8 @@ export function drawColormapPreview(
   const imgData = ctx.createImageData(w, h);
 
   for (let x = 0; x < w; x++) {
-    const idx = Math.floor((x / (w - 1)) * 255);
+    let idx = Math.floor((x / (w - 1)) * 255);
+    if (reversed) idx = 255 - idx;
     const r = lut[idx * 4];
     const g = lut[idx * 4 + 1];
     const b = lut[idx * 4 + 2];

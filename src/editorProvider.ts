@@ -81,7 +81,7 @@ export class GeoTIFFEditorProvider
     </script>`;
     html = html.replace("</head>", `${injection}\n</head>`);
 
-    // Adjust CSP for webview context
+    // Adjust CSP for webview context.
     const csp = `<meta http-equiv="Content-Security-Policy" content="
       default-src 'none';
       script-src ${webview.cspSource} https://unpkg.com 'unsafe-inline' 'wasm-unsafe-eval';

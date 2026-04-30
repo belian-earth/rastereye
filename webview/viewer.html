@@ -215,6 +215,17 @@
       border: 1px solid var(--input-border);
     }
 
+    .checkbox-row {
+      display: flex !important;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      font-weight: normal;
+      color: var(--text-dim);
+      cursor: pointer;
+    }
+    .checkbox-row input { margin: 0; }
+
     .hidden { display: none !important; }
 
     .fullscreen-overlay {
@@ -399,6 +410,10 @@
       <label>Colormap</label>
       <select id="colormap-select"></select>
       <canvas id="colormap-preview" width="222" height="12"></canvas>
+      <label class="checkbox-row">
+        <input type="checkbox" id="colormap-reversed">
+        <span>Reverse</span>
+      </label>
     </div>
 
     <div class="control-group" id="range-group">

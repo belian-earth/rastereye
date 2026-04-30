@@ -5,3 +5,5 @@ dist/
 
 *.tif
 *.mp4
+*.zarr/
+*README_files/
