@@ -2,7 +2,7 @@
   "name": "rastereye",
   "displayName": "RasterEye",
   "description": "Quick GeoTIFF viewer with colormaps, false color composites, and basemap selection",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "belian-earth",
   "license": "MIT",
   "repository": {
