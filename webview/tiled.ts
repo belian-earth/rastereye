@@ -144,7 +144,13 @@ function makeCOGLayerProps(layerId: string): any {
       }
 
       try {
+        // boundless: false clips edge tiles to the actual image bounds.
+        // Without this, the last column/row of tiles is padded by GDAL to the
+        // full 512×512 nominal tile size, and that padding (often 0, not the
+        // declared NaN nodata) renders as a ghost region south/east of the
+        // raster. Matches the upstream deck.gl-geotiff default pipeline.
         const tile = await image.fetchTile(options.x, options.y, {
+          boundless: false,
           signal: options.signal,
         });
         const data = tile.array.data;
