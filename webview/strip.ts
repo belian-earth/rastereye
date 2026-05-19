@@ -1,6 +1,6 @@
 /// Strip-layout GeoTIFF fallback — uses geotiff.js readRasters + BitmapLayer.
 
-import { fromUrl as geotiffFromUrl } from "geotiff";
+import { fromUrl as geotiffFromUrl, fromArrayBuffer as geotiffFromArrayBuffer } from "geotiff";
 import proj4 from "proj4";
 import { BitmapLayer } from "@deck.gl/layers";
 import {
@@ -101,7 +101,20 @@ export async function probeAndLoad(
 
 async function loadStripImage(): Promise<void> {
   try {
-    const tiff = await geotiffFromUrl(fileUrl);
+    // Read the whole file once instead of via `fromUrl`. geotiff.js's
+    // BlockedSource fragments stripped-layout reads (one row per strip ⇒
+    // thousands of small range requests for a moderate-sized file), and
+    // Chromium webviews cap parallel HTTP/1.1 connections per origin at 6 —
+    // the resulting queue hits `net::ERR_INSUFFICIENT_RESOURCES`, which the
+    // fetch API surfaces as a bare "Failed to fetch" TypeError.
+    // `readRasters` decompresses the full raster into memory anyway, so the
+    // memory cost of holding the source bytes is comparable.
+    const resp = await fetch(fileUrl);
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+    }
+    const buf = await resp.arrayBuffer();
+    const tiff = await geotiffFromArrayBuffer(buf);
     const image = await tiff.getImage();
 
     const w = image.getWidth();
