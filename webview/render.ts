@@ -11,7 +11,7 @@ export function renderBandsToRGBA(
   bands: ArrayLike<number>[],
   w: number,
   h: number
-): Uint8ClampedArray {
+): Uint8ClampedArray<ArrayBuffer> {
   const nodata = nodataValue;
   const scaled = scalingActive;
   const vMin = state.valueMin;

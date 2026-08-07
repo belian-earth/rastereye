@@ -6,7 +6,9 @@ import { setRange } from "./range";
 import { dnToScaled } from "./helpers";
 import { computePercentilesForBand } from "./percentiles";
 
-export function updateDefaultRange(tiff: any): void {
+/// Returns the percentile-computation promise so callers can re-render once
+/// the real 2-98% stretch replaces the type-based fallback.
+export function updateDefaultRange(tiff: any): Promise<void> {
   const bps = tiff.cachedTags?.bitsPerSample?.[0] ?? 8;
   const sf = tiff.cachedTags?.sampleFormat;
   let fallbackMin = 0;
@@ -25,5 +27,5 @@ export function updateDefaultRange(tiff: any): void {
     }
   }
   setRange(fallbackMin, fallbackMax);
-  computePercentilesForBand(state.singleBand);
+  return computePercentilesForBand(state.singleBand);
 }

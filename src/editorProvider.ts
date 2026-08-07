@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { FileServer } from "./fileServer";
+import { buildViewerHtml } from "./webviewHtml";
 
 export class GeoTIFFEditorProvider
   implements vscode.CustomReadonlyEditorProvider
@@ -57,54 +58,28 @@ export class GeoTIFFEditorProvider
     const fileUrl = this.fileServer.registerFile(document.uri.fsPath);
     const filename = path.basename(document.uri.fsPath);
 
-    // Read the viewer HTML template and inject the file URL + script URI
+    // Read the viewer HTML template and inject the file URL + asset URIs
     const viewerHtmlPath = path.join(
       this.context.extensionPath,
       "dist",
       "viewer.html"
     );
-    let html = fs.readFileSync(viewerHtmlPath, "utf-8");
+    const template = fs.readFileSync(viewerHtmlPath, "utf-8");
 
-    // Replace the relative script src with webview URI
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview.js")
-    );
-    html = html.replace(
-      `src="./webview.js"`,
-      `src="${scriptUri}"`
-    );
+    const assetUri = (name: string) =>
+      webview
+        .asWebviewUri(
+          vscode.Uri.joinPath(this.context.extensionUri, "dist", name)
+        )
+        .toString();
 
-    // Inject file URL and filename as global variables before the main script
-    const injection = `<script>
-      window.__RASTEREYE_FILE_URL__ = ${JSON.stringify(fileUrl)};
-      window.__RASTEREYE_FILENAME__ = ${JSON.stringify(filename)};
-    </script>`;
-    html = html.replace("</head>", `${injection}\n</head>`);
-
-    // Adjust CSP for webview context.
-    const csp = `<meta http-equiv="Content-Security-Policy" content="
-      default-src 'none';
-      script-src ${webview.cspSource} https://unpkg.com 'unsafe-inline' 'wasm-unsafe-eval';
-      style-src 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com;
-      img-src ${webview.cspSource} https: data: blob: http://127.0.0.1:${serverPort};
-      connect-src https: http://127.0.0.1:${serverPort};
-      worker-src blob: ${webview.cspSource};
-      font-src https://fonts.gstatic.com https: data:;
-      child-src blob:;
-    ">`;
-    // Replace any existing CSP or insert after charset
-    if (html.includes("Content-Security-Policy")) {
-      html = html.replace(
-        /<meta[^>]*Content-Security-Policy[^>]*>/,
-        csp
-      );
-    } else {
-      html = html.replace(
-        '<meta charset="UTF-8">',
-        `<meta charset="UTF-8">\n  ${csp}`
-      );
-    }
-
-    webview.html = html;
+    webview.html = buildViewerHtml(template, {
+      scriptUri: assetUri("webview.js"),
+      cssUri: assetUri("webview.css"),
+      fileUrl,
+      filename,
+      cspSource: webview.cspSource,
+      serverPort,
+    });
   }
 }
