@@ -93,7 +93,8 @@ describe("FileServer", () => {
     const url = server.registerFile(testFilePath);
     const id = new URL(url).pathname.slice(1);
     expect(id).not.toBe(Buffer.from(testFilePath).toString("base64url"));
-    expect(Buffer.from(id, "base64url").toString()).not.toContain("/");
+    // 16 random bytes → exactly 22 base64url chars, independent of path length
+    expect(id).toMatch(/^[A-Za-z0-9_-]{22}$/);
   });
 
   it("clamps range ends that overshoot EOF", async () => {
