@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RasterEye</title>
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="./webview.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -261,6 +261,18 @@
       color: #f0a0a0;
     }
 
+    #error-overlay {
+      cursor: pointer;
+    }
+
+    #error-box::after {
+      content: "Click to dismiss";
+      display: block;
+      margin-top: 8px;
+      font-size: 11px;
+      opacity: 0.6;
+    }
+
     .band-row {
       display: flex;
       gap: 6px;
@@ -436,7 +448,6 @@
     <div id="error-box" class="glass-box"></div>
   </div>
 
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script>
     document.getElementById("panel-toggle").addEventListener("click", function() {
       document.getElementById("panel").classList.toggle("collapsed");

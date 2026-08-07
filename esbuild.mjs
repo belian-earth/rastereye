@@ -3,24 +3,6 @@ import { copyFileSync } from "fs";
 
 const isWatch = process.argv.includes("--watch");
 
-// Plugin: resolve maplibre-gl imports to the CDN global
-const maplibreGlobalPlugin = {
-  name: "maplibre-global",
-  setup(build) {
-    build.onResolve({ filter: /^(maplibre-gl|mapbox-gl)$/ }, (args) => ({
-      path: args.path,
-      namespace: "maplibre-global",
-    }));
-    build.onLoad(
-      { filter: /.*/, namespace: "maplibre-global" },
-      () => ({
-        contents: "module.exports = globalThis.maplibregl;",
-        loader: "js",
-      })
-    );
-  },
-};
-
 // Extension host bundle (Node.js / CJS)
 const extensionConfig = {
   entryPoints: ["src/extension.ts"],
@@ -34,6 +16,8 @@ const extensionConfig = {
 };
 
 // Webview bundle (browser / ESM — needed for top-level await in deps).
+// maplibre-gl (JS + CSS) is bundled rather than CDN-loaded so the viewer
+// works offline and no third-party-served code runs in the webview.
 const webviewConfig = {
   entryPoints: ["webview/main.ts"],
   bundle: true,
@@ -42,7 +26,6 @@ const webviewConfig = {
   outfile: "dist/webview.js",
   sourcemap: true,
   minify: !isWatch,
-  plugins: [maplibreGlobalPlugin],
   define: {
     "process.env.NODE_ENV": '"production"',
   },

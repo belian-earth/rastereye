@@ -89,6 +89,61 @@ describe("FileServer", () => {
     expect(body).toBe("RasterEye");
   });
 
+  it("uses unguessable tokens, not path-derived IDs", () => {
+    const url = server.registerFile(testFilePath);
+    const id = new URL(url).pathname.slice(1);
+    expect(id).not.toBe(Buffer.from(testFilePath).toString("base64url"));
+    expect(Buffer.from(id, "base64url").toString()).not.toContain("/");
+  });
+
+  it("clamps range ends that overshoot EOF", async () => {
+    const url = server.registerFile(testFilePath);
+    const res = await fetch(url, {
+      headers: { Range: `bytes=7-${testFileContent.length + 65536}` },
+    });
+    expect(res.status).toBe(206);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(testFileContent.subarray(7))).toBe(true);
+    expect(res.headers.get("content-range")).toBe(
+      `bytes 7-${testFileContent.length - 1}/${testFileContent.length}`
+    );
+  });
+
+  it("supports suffix ranges", async () => {
+    const url = server.registerFile(testFilePath);
+    const res = await fetch(url, { headers: { Range: "bytes=-5" } });
+    expect(res.status).toBe(206);
+    const body = await res.text();
+    expect(body).toBe("data.");
+  });
+
+  it("supports open-ended ranges", async () => {
+    const url = server.registerFile(testFilePath);
+    const res = await fetch(url, { headers: { Range: "bytes=7-" } });
+    expect(res.status).toBe(206);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(testFileContent.subarray(7))).toBe(true);
+  });
+
+  it("returns 416 for unsatisfiable ranges", async () => {
+    const url = server.registerFile(testFilePath);
+    const res = await fetch(url, {
+      headers: { Range: `bytes=${testFileContent.length}-` },
+    });
+    expect(res.status).toBe(416);
+    expect(res.headers.get("content-range")).toBe(
+      `bytes */${testFileContent.length}`
+    );
+  });
+
+  it("serves the full file for malformed range headers", async () => {
+    const url = server.registerFile(testFilePath);
+    const res = await fetch(url, { headers: { Range: "bytes=oops" } });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(testFileContent)).toBe(true);
+  });
+
   it("returns 404 for unregistered files", async () => {
     const port = server.getPort();
     const res = await fetch(`http://127.0.0.1:${port}/nonexistent`);

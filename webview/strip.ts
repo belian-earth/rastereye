@@ -113,6 +113,19 @@ async function loadStripImage(): Promise<void> {
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
     }
+    // The strip path buffers and decodes the whole file on the main thread;
+    // past ~1 GB that freezes the webview or OOMs the renderer.
+    const contentLength = Number(resp.headers.get("content-length"));
+    const MAX_STRIP_BYTES = 1_000_000_000;
+    if (Number.isFinite(contentLength) && contentLength > MAX_STRIP_BYTES) {
+      const gb = (contentLength / 1e9).toFixed(1);
+      showError(
+        `This stripped GeoTIFF is ${gb} GB — too large to load in one piece. ` +
+        `Convert it to a Cloud-Optimized GeoTIFF for tiled loading, e.g.: ` +
+        `gdal_translate -of COG input.tif output.tif`,
+      );
+      return;
+    }
     const buf = await resp.arrayBuffer();
     const tiff = await geotiffFromArrayBuffer(buf);
     const image = await tiff.getImage();
@@ -159,6 +172,24 @@ async function loadStripImage(): Promise<void> {
     } catch { /* ignore */ }
 
     stripBbox = reprojectBBox(image.getBoundingBox(), epsgCode);
+
+    // reprojectBBox falls back to the raw projected bbox when the CRS could
+    // not be resolved (e.g. epsg.io unreachable). Passing metre coordinates
+    // to fitBounds would throw an unrelated-looking LngLat error, so fail
+    // with the actual cause instead.
+    const [w0, s0, e0, n0] = stripBbox;
+    const plausible =
+      Math.abs(w0) <= 360 && Math.abs(e0) <= 360 &&
+      Math.abs(s0) <= 90 && Math.abs(n0) <= 90;
+    if (!plausible) {
+      showError(
+        `Could not reproject EPSG:${epsgCode} coordinates to WGS84. ` +
+        `Projection lookup may have failed (epsg.io unreachable?). ` +
+        `The raster cannot be placed on the map.`,
+      );
+      return;
+    }
+
     stripBands = bands;
     stripWidth = readW;
     stripHeight = readH;

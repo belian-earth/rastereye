@@ -14,7 +14,7 @@ import {
   setBandOffsets, setBandNames, setScalingActive, setGpuDevice,
   map,
 } from "./state";
-import { showLoading } from "./helpers";
+import { showLoading, showError, isAbortError } from "./helpers";
 import {
   buildBandTexture, buildRgbaBandsTexture,
   buildSinglebandPipeline, build3bandPipeline,
@@ -22,6 +22,7 @@ import {
 } from "./gpu-pipeline";
 import { populateBandSelectors, updateControlVisibility } from "./ui";
 import { updateDefaultRange } from "./tiled-range";
+import { tilePixels } from "./extract";
 
 /// Shared main-thread decoder pool. Tile decompression runs synchronously on
 /// the main thread (worker-backed pools were tried but the perceived UI
@@ -35,6 +36,25 @@ export function getDecoderPool(): any {
 // Layer versioning for cache management
 let layerVersion = 0;
 let currentLayerId = "cog-layer-0";
+
+// GPU textures created for the current layer generation. deck.gl's tileset
+// calls onTileUnload on cache eviction but not on layer teardown, so without
+// explicit tracking a rebuild strands every cached tile's texture until GC.
+let liveTextures = new Set<any>();
+let tileErrorShown = false;
+
+function destroyTexture(texture: any): void {
+  try {
+    texture?.destroy?.();
+  } catch { /* already destroyed */ }
+}
+
+/// Destroy all textures of the outgoing generation once the old layer has
+/// been finalized (setProps swaps layers asynchronously; a short delay keeps
+/// us from deleting textures a final frame still references).
+function sweepTextures(textures: Set<any>): void {
+  setTimeout(() => textures.forEach(destroyTexture), 500);
+}
 
 // ---------------------------------------------------------------------------
 // Metadata handler (called by COGLayer's onGeoTIFFLoad)
@@ -107,7 +127,10 @@ export function handleGeoTIFFLoad(tiff: any, opts: any): void {
     console.warn("[RasterEye] Failed to fit bounds:", err);
   }
 
-  updateDefaultRange(tiff);
+  // Percentiles resolve async; tiles rendered before then use the type-based
+  // fallback stretch. Re-emit the render pipeline once the real 2-98% range
+  // lands so early tiles don't keep a different stretch than later ones.
+  updateDefaultRange(tiff).then(() => rerenderTiledLayer());
 
   state.renderMode = "singleband";
   (document.getElementById("mode-select") as HTMLSelectElement).value =
@@ -135,6 +158,14 @@ function makeCOGLayerProps(layerId: string): any {
     onGeoTIFFLoad: handleGeoTIFFLoad,
     onError: (err: any) => {
       console.error("[RasterEye] COGLayer error:", err);
+      showError("Failed to render GeoTIFF: " + (err?.message || err));
+    },
+    onTileUnload: (tile: any) => {
+      const texture = tile?.content?.texture;
+      if (texture) {
+        liveTextures.delete(texture);
+        destroyTexture(texture);
+      }
     },
 
     getTileData: async (image: any, options: any) => {
@@ -153,27 +184,39 @@ function makeCOGLayerProps(layerId: string): any {
           boundless: false,
           signal: options.signal,
         });
-        const data = tile.array.data;
         const w = tile.array.width;
         const h = tile.array.height;
-        const spp = Math.max(1, Math.round(data.length / (w * h)));
+        // Tiles arrive pixel-interleaved or band-separate depending on the
+        // file's PlanarConfiguration; tilePixels normalizes both layouts.
+        const { px, spp } = tilePixels(tile.array);
 
         if (state.renderMode === "singleband") {
           const texture = buildBandTexture(
-            options.device, data, w, h, spp, state.singleBand,
+            options.device, px, w, h, spp, state.singleBand,
           );
+          liveTextures.add(texture);
           return { width: w, height: h, byteLength: w * h * 4, texture };
         }
 
         // 3-band composite: upload R/G/B + alpha as a single rgba32float
         // texture. One sampler, one upload — same shape as single-band.
         const texture = buildRgbaBandsTexture(
-          options.device, data, w, h, spp,
+          options.device, px, w, h, spp,
           state.bandR, state.bandG, state.bandB,
         );
+        liveTextures.add(texture);
         return { width: w, height: h, byteLength: w * h * 16, texture, mode: "3band" };
       } catch (err: any) {
+        if (isAbortError(err, options.signal)) {
+          throw err;
+        }
         console.error("[RasterEye] fetchTile FAILED:", err);
+        // Real decode failures get surfaced once instead of leaving a
+        // silently blank map.
+        if (!tileErrorShown) {
+          tileErrorShown = true;
+          showError("Failed to load raster tiles: " + (err?.message || err));
+        }
         throw err;
       }
     },
@@ -207,6 +250,9 @@ export function rebuildLayer(): void {
   if (!fileUrl && !geotiffObj) return;
   layerVersion++;
   currentLayerId = `cog-layer-${layerVersion}`;
+  sweepTextures(liveTextures);
+  liveTextures = new Set();
+  tileErrorShown = false;
   overlay.setProps({
     layers: [new COGLayer(makeCOGLayerProps(currentLayerId))],
   });

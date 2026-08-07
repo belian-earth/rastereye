@@ -1,17 +1,17 @@
 /// <reference lib="dom" />
 /// Entry point — map init, control wiring, file loading dispatch.
 
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import {
   state, BASEMAP_STYLES, setMap, setOverlay, setFileUrl, map, fileUrl,
 } from "./state";
-import { hideError } from "./helpers";
+import { hideError, showError, isAbortError } from "./helpers";
 import { updateColormapPreview, updateControlVisibility, populateColormapSelector } from "./ui";
 import { rerenderLayer, rebuildLayer } from "./layers";
 import { probeAndLoad } from "./strip";
 import { computePercentilesForBand } from "./percentiles";
-
-declare const maplibregl: any;
 
 // ---------------------------------------------------------------------------
 // Control event setup
@@ -98,8 +98,11 @@ function setupControls(): void {
   const minInput = document.getElementById("min-value") as HTMLInputElement;
   const maxInput = document.getElementById("max-value") as HTMLInputElement;
   const onRangeChange = () => {
-    state.valueMin = parseFloat(minInput.value) || 0;
-    state.valueMax = parseFloat(maxInput.value) || 1;
+    // Number.isFinite, not `|| fallback`: a typed 0 is a legitimate bound.
+    const mn = parseFloat(minInput.value);
+    const mx = parseFloat(maxInput.value);
+    if (Number.isFinite(mn)) state.valueMin = mn;
+    if (Number.isFinite(mx)) state.valueMax = mx;
     rerenderLayer();
   };
   minInput.addEventListener("change", onRangeChange);
@@ -114,6 +117,20 @@ function setupControls(): void {
 
 function init(): void {
   const win = window as any;
+
+  // The error overlay blocks the whole viewer; let the user dismiss it.
+  document.getElementById("error-overlay")!.addEventListener("click", hideError);
+
+  // Backstop for failures nothing else reports — e.g. COGLayer's internal
+  // GeoTIFF parse runs as an unawaited promise, so a CRS lookup failure
+  // would otherwise leave the loading spinner up forever with no message.
+  window.addEventListener("unhandledrejection", (e) => {
+    if (isAbortError(e.reason)) return;
+    console.error("[RasterEye] Unhandled rejection:", e.reason);
+    showError(
+      "Failed to load GeoTIFF: " + (e.reason?.message || String(e.reason)),
+    );
+  });
   const params = new URLSearchParams(window.location.search);
   const paramFile = win.__RASTEREYE_FILE_URL__ || params.get("file");
   const paramName =

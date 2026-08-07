@@ -7,8 +7,9 @@ import { isNodata, dnToScaled } from "./helpers";
 import { setRange } from "./range";
 import { stripBands } from "./strip";
 import { getDecoderPool } from "./tiled";
+import { tilePixels, bandView } from "./extract";
 
-let cachedTileData: any = null;
+let cachedTileArray: any = null;
 
 export async function computePercentilesForBand(bandIdx: number): Promise<void> {
   if (!geotiffObj && stripBands.length === 0) return;
@@ -25,14 +26,28 @@ export async function computePercentilesForBand(bandIdx: number): Promise<void> 
         values.push(scalingActive ? dnToScaled(dn, bi) : dn);
       }
     } else {
-      if (!cachedTileData && geotiffObj) {
-        const tile = await geotiffObj.fetchTile(0, 0, { pool: getDecoderPool() });
-        cachedTileData = tile.array.data;
+      if (!cachedTileArray && geotiffObj) {
+        // Sample the coarsest overview when one exists (overviews are listed
+        // finest-first): its tile 0,0 spans the whole image, unlike the
+        // full-res top-left tile, which may be unrepresentative or all-nodata.
+        // boundless: false — GDAL pads edge tiles with zeros (not nodata),
+        // which would otherwise skew the stretch.
+        const overviews = geotiffObj.overviews ?? [];
+        const source = overviews.length > 0
+          ? overviews[overviews.length - 1]
+          : geotiffObj;
+        const tile = await source.fetchTile(0, 0, {
+          pool: getDecoderPool(),
+          boundless: false,
+        });
+        cachedTileArray = tile.array;
       }
-      if (!cachedTileData) return;
-      const pixelCount = cachedTileData.length / bandCount;
+      if (!cachedTileArray) return;
+      const { px, spp } = tilePixels(cachedTileArray);
+      const { src, stride, base } = bandView(px, spp, bi);
+      const pixelCount = cachedTileArray.width * cachedTileArray.height;
       for (let i = 0; i < pixelCount; i++) {
-        const dn = cachedTileData[i * bandCount + bi];
+        const dn = src[base + i * stride];
         if (isNodata(dn, nodata)) continue;
         values.push(scalingActive ? dnToScaled(dn, bi) : dn);
       }

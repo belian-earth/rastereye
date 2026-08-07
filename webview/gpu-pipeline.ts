@@ -23,10 +23,9 @@ import colormapsPng from "@developmentseed/deck.gl-raster/gpu-modules/colormaps.
 import {
   state, nodataValue, scalingActive, bandScales, bandOffsets,
 } from "./state";
+import { NODATA_SENTINEL, extractBand, extractRgba, TilePixels } from "./extract";
 
-/// Float32 sentinel for replaced NaN / nodata pixels. Far outside any plausible
-/// raster value range, so it can be matched exactly by FilterNoDataVal.
-export const NODATA_SENTINEL = -3.4028235e38;
+export { NODATA_SENTINEL };
 
 let colormapTexturePromise: Promise<any> | null = null;
 
@@ -49,32 +48,23 @@ export function colormapIndex(name: string): number {
   return idx ?? COLORMAP_INDEX.viridis;
 }
 
-/// Build an r32float single-channel texture from interleaved tile data,
+/// Build an r32float single-channel texture from tile data (either layout),
 /// extracting the chosen band, applying GDAL scale/offset, and folding
 /// NaN / nodata values into a uniform sentinel for shader-side discard.
-/// The sentinel is preserved verbatim (not run through scale/offset) so
-/// FilterNoDataVal can match it exactly.
 export function buildBandTexture(
   device: any,
-  data: ArrayLike<number>,
+  px: TilePixels,
   width: number,
   height: number,
   spp: number,
   bandIdx: number,
 ): any {
-  const px = width * height;
-  const bandData = new Float32Array(px);
-  const nodata = nodataValue;
   const bi = Math.min(bandIdx, spp - 1);
   const scale = scalingActive ? (bandScales[bi] ?? 1) : 1;
   const offset = scalingActive ? (bandOffsets[bi] ?? 0) : 0;
-
-  for (let i = 0; i < px; i++) {
-    const v = data[i * spp + bi];
-    bandData[i] = (v === nodata || v !== v)
-      ? NODATA_SENTINEL
-      : v * scale + offset;
-  }
+  const bandData = extractBand(
+    px, width * height, spp, bandIdx, nodataValue, scale, offset,
+  );
 
   return device.createTexture({
     data: bandData,
@@ -94,7 +84,7 @@ export function buildBandTexture(
 /// Single texture upload — same shape as single-band, just RGBA instead of R.
 export function buildRgbaBandsTexture(
   device: any,
-  data: ArrayLike<number>,
+  px: TilePixels,
   width: number,
   height: number,
   spp: number,
@@ -102,31 +92,18 @@ export function buildRgbaBandsTexture(
   bandG: number,
   bandB: number,
 ): any {
-  const px = width * height;
-  const out = new Float32Array(px * 4);
-  const nodata = nodataValue;
-
   const ri = Math.min(bandR, spp - 1);
   const gi = Math.min(bandG, spp - 1);
   const bi = Math.min(bandB, spp - 1);
 
-  const sR = scalingActive ? (bandScales[ri] ?? 1) : 1;
-  const oR = scalingActive ? (bandOffsets[ri] ?? 0) : 0;
-  const sG = scalingActive ? (bandScales[gi] ?? 1) : 1;
-  const oG = scalingActive ? (bandOffsets[gi] ?? 0) : 0;
-  const sB = scalingActive ? (bandScales[bi] ?? 1) : 1;
-  const oB = scalingActive ? (bandOffsets[bi] ?? 0) : 0;
+  const scaleOf = (b: number) => (scalingActive ? (bandScales[b] ?? 1) : 1);
+  const offsetOf = (b: number) => (scalingActive ? (bandOffsets[b] ?? 0) : 0);
 
-  for (let i = 0; i < px; i++) {
-    const dnR = data[i * spp + ri];
-    const dnG = data[i * spp + gi];
-    const dnB = data[i * spp + bi];
-    const o = i * 4;
-    out[o]     = (dnR === nodata || dnR !== dnR) ? NODATA_SENTINEL : dnR * sR + oR;
-    out[o + 1] = (dnG === nodata || dnG !== dnG) ? NODATA_SENTINEL : dnG * sG + oG;
-    out[o + 2] = (dnB === nodata || dnB !== dnB) ? NODATA_SENTINEL : dnB * sB + oB;
-    out[o + 3] = 1;
-  }
+  const out = extractRgba(
+    px, width * height, spp, bandR, bandG, bandB, nodataValue,
+    [scaleOf(ri), scaleOf(gi), scaleOf(bi)],
+    [offsetOf(ri), offsetOf(gi), offsetOf(bi)],
+  );
 
   return device.createTexture({
     data: out,
