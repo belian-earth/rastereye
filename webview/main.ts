@@ -10,6 +10,7 @@ import {
 import { hideError, showError, isAbortError } from "./helpers";
 import { updateColormapPreview, updateControlVisibility, populateColormapSelector } from "./ui";
 import { rerenderLayer, rebuildLayer } from "./layers";
+import { loadTiledFile } from "./tiled";
 import { probeAndLoad } from "./strip";
 import { computePercentilesForBand } from "./percentiles";
 
@@ -180,7 +181,7 @@ function init(): void {
   m.on("load", () => {
     if (fileUrl) {
       hideError();
-      probeAndLoad(fileUrl, () => rebuildLayer());
+      probeAndLoad(fileUrl, () => loadTiledFile(fileUrl));
     }
   });
 }

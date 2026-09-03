@@ -23,6 +23,7 @@ import {
 import { populateBandSelectors, updateControlVisibility } from "./ui";
 import { updateDefaultRange } from "./tiled-range";
 import { tilePixels } from "./extract";
+import { openGeoTIFF } from "./open-geotiff";
 
 /// Shared main-thread decoder pool. Tile decompression runs synchronously on
 /// the main thread (worker-backed pools were tried but the perceived UI
@@ -31,6 +32,24 @@ let decoderPool: any = null;
 export function getDecoderPool(): any {
   if (!decoderPool) decoderPool = new DecoderPool({ size: 0 });
   return decoderPool;
+}
+
+/// GeoTIFF opened by us (with a known file size) before the first layer is
+/// built. handleGeoTIFFLoad owns `geotiffObj` and uses it as a first-load
+/// guard, so the pre-opened instance is kept separately until then.
+let openedTiff: any = null;
+
+/// Entry point for the tiled path: open the file with the source size seeded
+/// (see open-geotiff.ts), then build the layer around the opened instance.
+export async function loadTiledFile(url: string): Promise<void> {
+  try {
+    openedTiff = await openGeoTIFF(url);
+  } catch (err: any) {
+    console.error("[RasterEye] Failed to open tiled GeoTIFF:", err);
+    showError("Failed to open GeoTIFF: " + (err?.message || err));
+    return;
+  }
+  rebuildLayer();
 }
 
 // Layer versioning for cache management
@@ -152,7 +171,7 @@ let colormapTexture: any = null;
 function makeCOGLayerProps(layerId: string): any {
   return {
     id: layerId,
-    geotiff: geotiffObj || fileUrl,
+    geotiff: geotiffObj || openedTiff || fileUrl,
     opacity: state.opacity,
     pool: getDecoderPool(),
     onGeoTIFFLoad: handleGeoTIFFLoad,
