@@ -71,19 +71,15 @@ function makeRasterStyle(tiles: string[], attribution: string): any {
   };
 }
 
+/// Light, dark, and OSM-style basemaps are OpenFreeMap vector styles
+/// (https://openfreemap.org): no API key, no usage limits, OpenMapTiles
+/// schema over OpenStreetMap data. Carto's raster basemaps, used previously,
+/// began watermarking every tile with "API KEY REQUIRED" in September 2026.
+/// Satellite stays on Esri World Imagery, which needs no key.
 export const BASEMAP_STYLES: Record<string, any> = {
-  light: makeRasterStyle(
-    ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"],
-    "\u00a9 OpenStreetMap contributors \u00a9 CARTO"
-  ),
-  dark: makeRasterStyle(
-    ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],
-    "\u00a9 OpenStreetMap contributors \u00a9 CARTO"
-  ),
-  osm: makeRasterStyle(
-    ["https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png"],
-    "\u00a9 OpenStreetMap contributors \u00a9 CARTO"
-  ),
+  light: "https://tiles.openfreemap.org/styles/positron",
+  dark: "https://tiles.openfreemap.org/styles/dark",
+  osm: "https://tiles.openfreemap.org/styles/liberty",
   satellite: makeRasterStyle(
     [
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",

@@ -2,7 +2,7 @@
   "name": "rastereye",
   "displayName": "RasterEye",
   "description": "Quick GeoTIFF viewer with colormaps, false color composites, and basemap selection",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "belian-earth",
   "license": "MIT",
   "repository": {
@@ -78,6 +78,9 @@
     "@deck.gl/layers": "^9.3.2",
     "@deck.gl/mapbox": "^9.3.2",
     "@deck.gl/mesh-layers": "^9.3.2",
+    "@chunkd/middleware": "^11.3.1",
+    "@chunkd/source": "^11.4.1",
+    "@chunkd/source-http": "^11.4.1",
     "@developmentseed/deck.gl-geotiff": "^0.7.0",
     "@developmentseed/deck.gl-raster": "^0.7.0",
     "@developmentseed/morecantile": "^0.7.0",
