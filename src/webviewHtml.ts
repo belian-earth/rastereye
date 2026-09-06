@@ -35,12 +35,15 @@ export function buildViewerHtml(
     </script>`;
   html = html.replace("</head>", () => `${injection}\n</head>`);
 
+  // connect-src needs data: because geotiff.js's ZSTD decoder (zstddec)
+  // initialises its WASM module by fetching a base64 data: URL; without it
+  // ZSTD-compressed strip files fail with a bare "Failed to fetch".
   const csp = `<meta http-equiv="Content-Security-Policy" content="
       default-src 'none';
       script-src ${opts.cspSource} 'unsafe-inline' 'wasm-unsafe-eval';
       style-src ${opts.cspSource} 'unsafe-inline' https://fonts.googleapis.com;
       img-src ${opts.cspSource} https: data: blob: http://127.0.0.1:${opts.serverPort};
-      connect-src https: http://127.0.0.1:${opts.serverPort};
+      connect-src https: data: http://127.0.0.1:${opts.serverPort};
       worker-src blob: ${opts.cspSource};
       font-src https://fonts.gstatic.com https: data:;
       child-src blob:;
