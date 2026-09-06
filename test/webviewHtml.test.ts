@@ -40,6 +40,12 @@ describe("buildViewerHtml", () => {
     expect(html).not.toContain("unpkg.com");
   });
 
+  it("allows data: in connect-src so the ZSTD wasm decoder can initialise", () => {
+    const html = buildViewerHtml(TEMPLATE, BASE_OPTS);
+    const connect = html.match(/connect-src ([^;]+);/)?.[1] ?? "";
+    expect(connect.split(/\s+/)).toContain("data:");
+  });
+
   it("neutralizes a script-injection filename", () => {
     const html = buildViewerHtml(TEMPLATE, {
       ...BASE_OPTS,
