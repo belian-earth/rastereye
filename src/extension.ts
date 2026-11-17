@@ -5,7 +5,7 @@ import { FileServer } from "./fileServer";
 let fileServer: FileServer;
 
 export async function activate(context: vscode.ExtensionContext) {
-  fileServer = new FileServer(context.extensionPath);
+  fileServer = new FileServer();
   await fileServer.start();
 
   const openCommand = vscode.commands.registerCommand(

@@ -1,22 +1,6 @@
 import * as http from "http";
 import * as fs from "fs";
-import * as path from "path";
 import * as crypto from "crypto";
-
-const MIME_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "application/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-};
-
-const STATIC_ROUTES: Record<string, string> = {
-  "/viewer": "viewer.html",
-  "/viewer.html": "viewer.html",
-  "/webview.js": "webview.js",
-  "/webview.js.map": "webview.js.map",
-  "/webview.css": "webview.css",
-};
 
 /** Parsed byte range, or "invalid" (unsatisfiable → 416) or null (malformed →
  *  ignore the header per RFC 9110 and serve the full file). */
@@ -45,11 +29,17 @@ export function parseRangeHeader(
     end = fileSize - 1;
   } else {
     start = parseInt(m[1], 10);
-    // Clamp overshooting ends to EOF: geotiff.js requests block-aligned
-    // ranges whose last block routinely extends past the file.
-    end = m[2] === "" ? fileSize - 1 : Math.min(parseInt(m[2], 10), fileSize - 1);
+    const last = m[2] === "" ? Infinity : parseInt(m[2], 10);
+    if (last < start) {
+      // first-pos > last-pos is malformed rather than unsatisfiable, so the
+      // header is ignored (RFC 9110 section 14.1.2).
+      return null;
+    }
+    // Clamp overshooting ends to EOF: readers request block-aligned ranges
+    // whose last block routinely extends past the file.
+    end = Math.min(last, fileSize - 1);
   }
-  if (start >= fileSize || start > end) {
+  if (start >= fileSize) {
     return "invalid";
   }
   return { start, end };
@@ -60,13 +50,6 @@ export class FileServer {
   private port = 0;
   private files = new Map<string, string>(); // id -> absolute filepath
   private idsByPath = new Map<string, string>(); // absolute filepath -> id
-  private distDir: string;
-
-  constructor(extensionPath?: string) {
-    this.distDir = extensionPath
-      ? path.join(extensionPath, "dist")
-      : path.join(__dirname, "..");
-  }
 
   async start(): Promise<void> {
     this.server = http.createServer((req, res) => {
@@ -82,7 +65,10 @@ export class FileServer {
       }
     });
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      // Without this a failed listen is an unhandled "error" event and
+      // activation hangs.
+      this.server!.once("error", reject);
       this.server!.listen(0, "127.0.0.1", () => {
         const addr = this.server!.address();
         if (addr && typeof addr === "object") {
@@ -116,12 +102,6 @@ export class FileServer {
 
     const url = new URL(req.url || "/", `http://127.0.0.1:${this.port}`);
     const pathname = url.pathname;
-
-    // Static assets
-    const staticFile = STATIC_ROUTES[pathname];
-    if (staticFile) {
-      return this.serveStatic(res, staticFile);
-    }
 
     // GeoTIFF file serving (by unguessable token) with range request support
     const fileId = pathname.slice(1);
@@ -199,28 +179,6 @@ export class FileServer {
   dispose(): void {
     this.server?.close();
     this.server = null;
-  }
-
-  private serveStatic(res: http.ServerResponse, filename: string): void {
-    const filePath = path.join(this.distDir, filename);
-
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      res.writeHead(404);
-      res.end(`${filename} not found`);
-      return;
-    }
-
-    const ext = path.extname(filename);
-    const contentType = MIME_TYPES[ext] || "application/octet-stream";
-    res.writeHead(200, {
-      "Content-Type": contentType,
-      "Content-Length": stat.size,
-      "Cache-Control": "no-cache",
-    });
-    pipeFile(fs.createReadStream(filePath), res);
   }
 }
 

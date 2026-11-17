@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { buildViewerHtml, jsonForInlineScript } from "../src/webviewHtml";
 
 const TEMPLATE = `<!DOCTYPE html>
@@ -19,6 +20,7 @@ const BASE_OPTS = {
   filename: "test.tif",
   cspSource: "vscode-resource://ext",
   serverPort: 1234,
+  nonce: "TESTNONCE",
 };
 
 describe("jsonForInlineScript", () => {
@@ -62,5 +64,36 @@ describe("buildViewerHtml", () => {
       filename: "weird$&name$'.tif",
     });
     expect(html).toContain(String.raw`weird$&name$'.tif`);
+  });
+
+  it("authorises only the injected script, by nonce", () => {
+    const html = buildViewerHtml(TEMPLATE, BASE_OPTS);
+    const scriptSrc = html.match(/script-src ([^;]+);/)?.[1] ?? "";
+    expect(scriptSrc).toContain("'nonce-TESTNONCE'");
+    expect(scriptSrc).not.toContain("unsafe-inline");
+    expect(html).toContain('<script nonce="TESTNONCE">');
+  });
+
+  it("refuses to build a page without a policy", () => {
+    expect(() => buildViewerHtml("<html><head></head></html>", BASE_OPTS)).toThrow(/CSP/);
+  });
+});
+
+describe("the real viewer.html template", () => {
+  const template = readFileSync("webview/viewer.html", "utf8");
+  const html = buildViewerHtml(template, BASE_OPTS);
+
+  it("receives the policy and asset URIs", () => {
+    expect(html).toContain("Content-Security-Policy");
+    expect(html).toContain(`src="${BASE_OPTS.scriptUri}"`);
+    expect(html).toContain(`href="${BASE_OPTS.cssUri}"`);
+  });
+
+  it("contains no inline script or handler the policy would block", () => {
+    const scripts = [...html.matchAll(/<script\b([^>]*)>/gi)].map((m) => m[1]);
+    for (const attrs of scripts) {
+      expect(attrs.includes("nonce=") || attrs.includes("src="), attrs).toBe(true);
+    }
+    expect(html).not.toMatch(/\son[a-z]+\s*=/i);
   });
 });

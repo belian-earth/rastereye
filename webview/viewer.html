@@ -265,6 +265,18 @@
       cursor: pointer;
     }
 
+    #notice {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      padding: 8px 14px;
+      font-size: 11px;
+      color: var(--text);
+      z-index: 150;
+      pointer-events: none;
+    }
+
     #error-box::after {
       content: "Click to dismiss";
       display: block;
@@ -357,6 +369,95 @@
     .maplibregl-ctrl-attrib-button {
       filter: invert(0.7);
     }
+    /* Cell inspector popup (webview/inspect.ts) */
+    .re-inspect .maplibregl-popup-content {
+      background: rgba(20, 20, 20, 0.88);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-radius: var(--panel-radius);
+      box-shadow: var(--panel-shadow);
+      color: var(--text);
+      padding: 10px 12px;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 11px;
+      user-select: text;
+    }
+    .re-inspect.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+    .re-inspect.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+    .re-inspect.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+      border-bottom-color: rgba(20, 20, 20, 0.88);
+    }
+    .re-inspect.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+    .re-inspect.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+    .re-inspect.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+      border-top-color: rgba(20, 20, 20, 0.88);
+    }
+    .re-inspect.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+      border-right-color: rgba(20, 20, 20, 0.88);
+    }
+    .re-inspect.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+      border-left-color: rgba(20, 20, 20, 0.88);
+    }
+    .re-inspect .maplibregl-popup-close-button {
+      color: var(--text-dim);
+      font-size: 16px;
+      padding: 2px 7px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+    }
+    .re-inspect .maplibregl-popup-close-button:hover { color: var(--text-bright); }
+    .re-inspect .ri-head {
+      font-weight: 600;
+      color: var(--text-bright);
+      padding-right: 18px;
+    }
+    .re-inspect .ri-sub {
+      color: var(--text-dim);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      margin: 2px 0 8px;
+    }
+    .re-inspect .ri-msg { color: var(--text-dim); }
+    .re-inspect .ri-scroll {
+      max-height: 240px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .re-inspect .ri-scroll::-webkit-scrollbar { width: 4px; }
+    .re-inspect .ri-scroll::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.12);
+      border-radius: 2px;
+    }
+    .re-inspect table { border-collapse: collapse; width: 100%; }
+    .re-inspect th {
+      font-size: 9px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      text-align: left;
+      padding: 0 8px 4px 0;
+    }
+    .re-inspect td {
+      padding: 2px 8px 2px 0;
+      white-space: nowrap;
+    }
+    .re-inspect td.name {
+      max-width: 130px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .re-inspect .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      padding-right: 0;
+    }
+    .re-inspect th.num + th.num, .re-inspect td.num + td.num { padding-left: 10px; }
+    .re-inspect td.role { width: 12px; font-weight: 600; color: var(--accent); }
+    .re-inspect tr.active td.name, .re-inspect tr.active td.num { color: var(--text-bright); }
+    .re-inspect tr.band-r td.role { color: #e06060; }
+    .re-inspect tr.band-b td.role { color: #6090d0; }
+    .re-inspect tr.nodata td { color: var(--text-dim); }
   </style>
 </head>
 <body>
@@ -444,15 +545,12 @@
     <div id="loading-box" class="glass-box">Loading GeoTIFF...</div>
   </div>
 
+  <div id="notice" class="glass-box hidden"></div>
+
   <div id="error-overlay" class="fullscreen-overlay hidden">
     <div id="error-box" class="glass-box"></div>
   </div>
 
-  <script>
-    document.getElementById("panel-toggle").addEventListener("click", function() {
-      document.getElementById("panel").classList.toggle("collapsed");
-    });
-  </script>
   <script type="module" src="./webview.js"></script>
 </body>
 </html>

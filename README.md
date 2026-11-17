@@ -19,8 +19,11 @@ Quick GeoTIFF viewer for VS Code and Positron. Click a `.tif` file, see it on a 
 - Auto 2nd/98th percentile stretch with manual min/max override
 - Scale/offset and band description metadata from GDAL tags
 - Base layers: Light, Dark, OpenStreetMap (OpenFreeMap vector tiles, no API key), Satellite (Esri)
+- Click any cell for a popup of its values in every band (raw and scaled), with row/col and coordinates
 - Opacity slider, collapsible control panel
 - Auto CRS reprojection, COG + standard (tiled and stripped) GeoTIFF support
+- Palette rasters drawn with their own colour table; LERC, Deflate, LZW and ZSTD compression
+- Opens without a network connection for most projected CRSs (no basemap)
 
 ## Install
 

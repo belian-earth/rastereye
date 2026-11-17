@@ -5,62 +5,51 @@
 /// nodata-filter / rescale / (colormap or composite) on the GPU. Colormap,
 /// range, and opacity changes don't trigger any CPU work on cached tiles.
 
-import { COGLayer } from "@developmentseed/deck.gl-geotiff";
+import { COGLayer, COGSource } from "@developmentseed/deck.gl-geotiff";
+import type { GeographicBounds } from "@developmentseed/deck.gl-raster";
 import { DecoderPool } from "@developmentseed/geotiff";
-import {
-  state, overlay, fileUrl, geotiffObj, bandCount, nodataValue,
-  bandScales, bandOffsets, scalingActive, gpuDevice,
-  setGeotiffObj, setBandCount, setNodataValue, setBandScales,
-  setBandOffsets, setBandNames, setScalingActive, setGpuDevice,
-  map,
-} from "./state";
-import { showLoading, showError, isAbortError } from "./helpers";
+import { state, overlay } from "./state";
+import { showError, isAbortError } from "./helpers";
 import {
   buildBandTexture, buildRgbaBandsTexture,
   buildSinglebandPipeline, build3bandPipeline,
   getColormapTexture,
 } from "./gpu-pipeline";
-import { populateBandSelectors, updateControlVisibility } from "./ui";
-import { updateDefaultRange } from "./tiled-range";
 import { tilePixels } from "./extract";
-import { openGeoTIFF } from "./open-geotiff";
+import { setInspectSource, tiledSource } from "./inspect";
+import { setRenderer } from "./layers";
+import { resolveEpsg } from "./epsg";
+import { setSampleProvider, PixelSample } from "./percentiles";
 
-/// Shared main-thread decoder pool. Tile decompression runs synchronously on
-/// the main thread (worker-backed pools were tried but the perceived UI
-/// latency was worse — see Apr 2026 discussion).
+/// Shared decoder pool with no workers: tiles decode on the main thread.
+/// Passing a pool explicitly is required even so, because the library's
+/// default pool starts workers from a script URL that does not exist in this
+/// bundle.
 let decoderPool: any = null;
 export function getDecoderPool(): any {
   if (!decoderPool) decoderPool = new DecoderPool({ size: 0 });
   return decoderPool;
 }
 
-/// GeoTIFF opened by us (with a known file size) before the first layer is
-/// built. handleGeoTIFFLoad owns `geotiffObj` and uses it as a first-load
-/// guard, so the pre-opened instance is kept separately until then.
-let openedTiff: any = null;
+/// The opened COG. COGSource.open resolves the CRS and builds the tile grid
+/// once; every COGLayer generation draws this same instance, so a rebuild
+/// never re-opens the file.
+let cogSource: COGSource | null = null;
 
-/// Entry point for the tiled path: open the file with the source size seeded
-/// (see open-geotiff.ts), then build the layer around the opened instance.
-export async function loadTiledFile(url: string): Promise<void> {
-  try {
-    openedTiff = await openGeoTIFF(url);
-  } catch (err: any) {
-    console.error("[RasterEye] Failed to open tiled GeoTIFF:", err);
-    showError("Failed to open GeoTIFF: " + (err?.message || err));
-    return;
-  }
-  rebuildLayer();
+/// GPU textures of one layer generation. deck.gl calls onTileUnload on cache
+/// eviction but not on layer teardown, so without explicit tracking a rebuild
+/// strands every cached tile's texture until GC.
+interface Generation {
+  textures: Set<any>;
+  /// Set once the generation has been replaced: tiles that finish decoding
+  /// afterwards must free their texture instead of registering it.
+  retired: boolean;
 }
-
-// Layer versioning for cache management
+let generation: Generation = { textures: new Set(), retired: false };
 let layerVersion = 0;
 let currentLayerId = "cog-layer-0";
-
-// GPU textures created for the current layer generation. deck.gl's tileset
-// calls onTileUnload on cache eviction but not on layer teardown, so without
-// explicit tracking a rebuild strands every cached tile's texture until GC.
-let liveTextures = new Set<any>();
 let tileErrorShown = false;
+let colormapTexture: any = null;
 
 function destroyTexture(texture: any): void {
   try {
@@ -68,113 +57,73 @@ function destroyTexture(texture: any): void {
   } catch { /* already destroyed */ }
 }
 
-/// Destroy all textures of the outgoing generation once the old layer has
-/// been finalized (setProps swaps layers asynchronously; a short delay keeps
-/// us from deleting textures a final frame still references).
-function sweepTextures(textures: Set<any>): void {
-  setTimeout(() => textures.forEach(destroyTexture), 500);
+/// Retire a generation and destroy its textures once the old layer has been
+/// finalized (setProps swaps layers asynchronously; a short delay keeps us
+/// from deleting textures a final frame still references).
+function retire(gen: Generation): void {
+  gen.retired = true;
+  setTimeout(() => {
+    gen.textures.forEach(destroyTexture);
+    gen.textures.clear();
+  }, 500);
 }
 
-// ---------------------------------------------------------------------------
-// Metadata handler (called by COGLayer's onGeoTIFFLoad)
-// ---------------------------------------------------------------------------
-
-export function handleGeoTIFFLoad(tiff: any, opts: any): void {
-  if (geotiffObj) return;
-  setGeotiffObj(tiff);
-
-  setBandCount(tiff.count ?? 1);
-  setNodataValue(tiff.nodata ?? null);
-
-  try {
-    setBandScales(tiff.scales ?? []);
-    setBandOffsets(tiff.offsets ?? []);
-  } catch {
-    setBandScales([]);
-    setBandOffsets([]);
-  }
-  setScalingActive(
-    bandScales.length > 0 &&
-    (bandScales.some((s: number) => s !== 1) ||
-      bandOffsets.some((o: number) => o !== 0))
-  );
-
-  // Extract band descriptions from GDALMetadata XML
-  let names: string[] = [];
-  try {
-    const rawXml: string | null = tiff.cachedTags?.gdalMetadata ?? null;
-    if (rawXml) {
-      const doc = new DOMParser().parseFromString(rawXml, "text/xml");
-      const items = doc.querySelectorAll('Item[name="DESCRIPTION"]');
-      if (items.length > 0) {
-        names = new Array(bandCount).fill("");
-        items.forEach((item) => {
-          const sample = item.getAttribute("sample");
-          if (sample != null) {
-            names[parseInt(sample, 10)] = item.textContent ?? "";
-          }
-        });
-      }
-    }
-  } catch { /* ignore */ }
-  setBandNames(names);
-
-  console.log("[RasterEye] onGeoTIFFLoad:", {
-    bands: bandCount,
-    nodata: nodataValue,
-    scaling: scalingActive,
-    isTiled: tiff.isTiled,
-    overviews: tiff.overviews?.length ?? 0,
-  });
-
-  // Fit map to bounds
-  const bounds = opts.geographicBounds;
-  try {
-    if (bounds) {
-      let west: number, south: number, east: number, north: number;
-      if (Array.isArray(bounds)) {
-        [west, south, east, north] = bounds;
-      } else {
-        ({ west, south, east, north } = bounds);
-      }
-      map.fitBounds(
-        [[west, south], [east, north]],
-        { padding: 50, maxZoom: 18 }
-      );
-    }
-  } catch (err) {
-    console.warn("[RasterEye] Failed to fit bounds:", err);
-  }
-
-  // Percentiles resolve async; tiles rendered before then use the type-based
-  // fallback stretch. Re-emit the render pipeline once the real 2-98% range
-  // lands so early tiles don't keep a different stretch than later ones.
-  updateDefaultRange(tiff).then(() => rerenderTiledLayer());
-
-  state.renderMode = "singleband";
-  (document.getElementById("mode-select") as HTMLSelectElement).value =
-    "singleband";
-
-  populateBandSelectors(bandCount);
-  updateControlVisibility();
-  showLoading(false);
-  rebuildLayer();
+/// Entry point for the tiled path. Returns the raster's geographic bounds.
+export async function loadTiled(tiff: any): Promise<GeographicBounds> {
+  cogSource = await COGSource.open(tiff, { epsgResolver: resolveEpsg });
+  const project = cogSource.tilesetDescriptor.projectFrom4326;
+  setInspectSource(tiledSource(
+    tiff,
+    (lng, lat) => project(lng, lat) as [number, number],
+    getDecoderPool(),
+  ));
+  setSampleProvider(() => sampleTiles(tiff));
+  setRenderer({ rerender: rerenderTiledLayer, rebuild: rebuildLayer });
+  return cogSource.geographicBounds;
 }
 
-// Cached colormap sprite texture, populated lazily on first GPU tile render.
-let colormapTexture: any = null;
+/// Pixels for the automatic stretch. With overviews, the coarsest level's
+/// first tile spans most or all of the image. Without them, the full-
+/// resolution top-left tile alone is often unrepresentative or all nodata,
+/// so sample the centre and the four quarter points instead.
+async function sampleTiles(tiff: any): Promise<PixelSample[]> {
+  const overviews = tiff.overviews ?? [];
+  const source = overviews.length > 0 ? overviews[overviews.length - 1] : tiff;
+  const nx = Math.max(1, Math.ceil(source.width / source.tileWidth));
+  const ny = Math.max(1, Math.ceil(source.height / source.tileHeight));
+  const at = (fx: number, fy: number): [number, number] =>
+    [Math.min(nx - 1, Math.floor(nx * fx)), Math.min(ny - 1, Math.floor(ny * fy))];
+  const wanted = overviews.length > 0
+    ? [at(0, 0), at(0.5, 0.5)]
+    : [at(0.5, 0.5), at(0.25, 0.25), at(0.75, 0.25), at(0.25, 0.75), at(0.75, 0.75)];
+  const unique = [...new Map(wanted.map((t) => [t.join(","), t])).values()];
+
+  // boundless: false, because GDAL pads edge tiles with zeros (not nodata),
+  // which would otherwise skew the stretch. Sparse tiles reject; skip them.
+  const results = await Promise.allSettled(unique.map(([x, y]) =>
+    source.fetchTile(x, y, { pool: getDecoderPool(), boundless: false })));
+  const samples: PixelSample[] = [];
+  for (const r of results) {
+    if (r.status !== "fulfilled") continue;
+    const arr = r.value.array;
+    const { px, spp } = tilePixels(arr);
+    samples.push({ px, spp, pixelCount: arr.width * arr.height, mask: arr.mask });
+  }
+  if (samples.length === 0) throw new Error("No readable tiles to sample");
+  return samples;
+}
 
 // ---------------------------------------------------------------------------
 // Layer management
 // ---------------------------------------------------------------------------
 
 function makeCOGLayerProps(layerId: string): any {
+  const gen = generation;
   return {
     id: layerId,
-    geotiff: geotiffObj || openedTiff || fileUrl,
+    source: cogSource,
     opacity: state.opacity,
     pool: getDecoderPool(),
-    onGeoTIFFLoad: handleGeoTIFFLoad,
     onError: (err: any) => {
       console.error("[RasterEye] COGLayer error:", err);
       showError("Failed to render GeoTIFF: " + (err?.message || err));
@@ -182,13 +131,12 @@ function makeCOGLayerProps(layerId: string): any {
     onTileUnload: (tile: any) => {
       const texture = tile?.content?.texture;
       if (texture) {
-        liveTextures.delete(texture);
+        gen.textures.delete(texture);
         destroyTexture(texture);
       }
     },
 
     getTileData: async (image: any, options: any) => {
-      if (!gpuDevice) setGpuDevice(options.device);
       if (!colormapTexture) {
         colormapTexture = await getColormapTexture(options.device);
       }
@@ -196,9 +144,8 @@ function makeCOGLayerProps(layerId: string): any {
       try {
         // boundless: false clips edge tiles to the actual image bounds.
         // Without this, the last column/row of tiles is padded by GDAL to the
-        // full 512×512 nominal tile size, and that padding (often 0, not the
-        // declared NaN nodata) renders as a ghost region south/east of the
-        // raster. Matches the upstream deck.gl-geotiff default pipeline.
+        // full nominal tile size, and that padding (often 0, not the declared
+        // nodata) renders as a ghost region south/east of the raster.
         const tile = await image.fetchTile(options.x, options.y, {
           boundless: false,
           signal: options.signal,
@@ -208,23 +155,26 @@ function makeCOGLayerProps(layerId: string): any {
         // Tiles arrive pixel-interleaved or band-separate depending on the
         // file's PlanarConfiguration; tilePixels normalizes both layouts.
         const { px, spp } = tilePixels(tile.array);
+        const mask = tile.array.mask;
+        const is3band = state.renderMode === "3band";
 
-        if (state.renderMode === "singleband") {
-          const texture = buildBandTexture(
-            options.device, px, w, h, spp, state.singleBand,
-          );
-          liveTextures.add(texture);
-          return { width: w, height: h, byteLength: w * h * 4, texture };
+        const texture = is3band
+          ? buildRgbaBandsTexture(
+              options.device, px, w, h, spp,
+              state.bandR, state.bandG, state.bandB, mask,
+            )
+          : buildBandTexture(options.device, px, w, h, spp, state.singleBand, mask);
+
+        // A tile superseded while it decoded (pan, zoom, or a rebuild) must
+        // not hand its texture to a layer that will never unload it.
+        if (gen.retired || options.signal?.aborted) {
+          destroyTexture(texture);
+          throw new DOMException("Tile superseded", "AbortError");
         }
-
-        // 3-band composite: upload R/G/B + alpha as a single rgba32float
-        // texture. One sampler, one upload — same shape as single-band.
-        const texture = buildRgbaBandsTexture(
-          options.device, px, w, h, spp,
-          state.bandR, state.bandG, state.bandB,
-        );
-        liveTextures.add(texture);
-        return { width: w, height: h, byteLength: w * h * 16, texture, mode: "3band" };
+        gen.textures.add(texture);
+        return is3band
+          ? { width: w, height: h, byteLength: w * h * 16, texture, mode: "3band" }
+          : { width: w, height: h, byteLength: w * h * 4, texture };
       } catch (err: any) {
         if (isAbortError(err, options.signal)) {
           throw err;
@@ -241,7 +191,7 @@ function makeCOGLayerProps(layerId: string): any {
     },
 
     renderTile: (td: any) => {
-      if (!gpuDevice || !td.texture) return null;
+      if (!td.texture) return null;
       if (td.mode === "3band") {
         return { renderPipeline: build3bandPipeline(td.texture) };
       }
@@ -265,20 +215,22 @@ function makeCOGLayerProps(layerId: string): any {
   };
 }
 
+/// Discard the tile cache and re-fetch (band selection or render mode).
 export function rebuildLayer(): void {
-  if (!fileUrl && !geotiffObj) return;
+  if (!cogSource) return;
   layerVersion++;
   currentLayerId = `cog-layer-${layerVersion}`;
-  sweepTextures(liveTextures);
-  liveTextures = new Set();
+  retire(generation);
+  generation = { textures: new Set(), retired: false };
   tileErrorShown = false;
   overlay.setProps({
     layers: [new COGLayer(makeCOGLayerProps(currentLayerId))],
   });
 }
 
+/// Keep the tile cache and replay renderTile via updateTriggers.
 export function rerenderTiledLayer(): void {
-  if (!fileUrl && !geotiffObj) return;
+  if (!cogSource) return;
   overlay.setProps({
     layers: [new COGLayer(makeCOGLayerProps(currentLayerId))],
   });

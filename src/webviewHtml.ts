@@ -15,6 +15,8 @@ export interface ViewerHtmlOptions {
   filename: string;
   cspSource: string;
   serverPort: number;
+  /** Random per-load value authorising the one injected inline script. */
+  nonce: string;
 }
 
 export function buildViewerHtml(
@@ -29,33 +31,37 @@ export function buildViewerHtml(
   html = html.replace(`src="./webview.js"`, () => `src="${opts.scriptUri}"`);
   html = html.replace(`href="./webview.css"`, () => `href="${opts.cssUri}"`);
 
-  const injection = `<script>
+  const injection = `<script nonce="${opts.nonce}">
       window.__RASTEREYE_FILE_URL__ = ${jsonForInlineScript(opts.fileUrl)};
       window.__RASTEREYE_FILENAME__ = ${jsonForInlineScript(opts.filename)};
     </script>`;
   html = html.replace("</head>", () => `${injection}\n</head>`);
 
+  // script-src carries no 'unsafe-inline': the only inline script is the
+  // injected globals block, authorised by nonce, so markup that reaches the
+  // page (e.g. basemap attribution HTML) cannot run script.
   // connect-src needs data: because geotiff.js's ZSTD decoder (zstddec)
   // initialises its WASM module by fetching a base64 data: URL; without it
   // ZSTD-compressed strip files fail with a bare "Failed to fetch".
+  // connect-src blob: lets the LERC decoder load its embedded WebAssembly.
+  // worker-src blob: covers the MapLibre worker (see webview/main.ts).
   const csp = `<meta http-equiv="Content-Security-Policy" content="
       default-src 'none';
-      script-src ${opts.cspSource} 'unsafe-inline' 'wasm-unsafe-eval';
+      script-src ${opts.cspSource} 'nonce-${opts.nonce}' 'wasm-unsafe-eval';
       style-src ${opts.cspSource} 'unsafe-inline' https://fonts.googleapis.com;
-      img-src ${opts.cspSource} https: data: blob: http://127.0.0.1:${opts.serverPort};
-      connect-src https: data: http://127.0.0.1:${opts.serverPort};
-      worker-src blob: ${opts.cspSource};
+      img-src ${opts.cspSource} https: data: blob:;
+      connect-src https: data: blob: http://127.0.0.1:${opts.serverPort};
+      worker-src blob:;
       font-src https://fonts.gstatic.com https: data:;
       child-src blob:;
     ">`;
-  if (html.includes("Content-Security-Policy")) {
-    html = html.replace(/<meta[^>]*Content-Security-Policy[^>]*>/, () => csp);
-  } else {
-    html = html.replace(
-      '<meta charset="UTF-8">',
-      () => `<meta charset="UTF-8">\n  ${csp}`
-    );
+  // Fail loudly rather than serve a page with no policy if the template's
+  // anchor ever changes.
+  const anchor = '<meta charset="UTF-8">';
+  if (!html.includes(anchor)) {
+    throw new Error("viewer.html is missing its charset meta tag; cannot inject CSP");
   }
+  html = html.replace(anchor, () => `${anchor}\n  ${csp}`);
 
   return html;
 }

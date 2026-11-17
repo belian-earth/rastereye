@@ -1,68 +1,31 @@
 # TODO
 
-## Upstream: `GeoTIFF.fromUrl` requests byte ranges past end of file
+Items left open after the November 2026 review.
 
-**Package:** `@developmentseed/geotiff` (0.7.0), `dist/geotiff.js`, `fromUrl`.
-**Related:** deck.gl-raster issue 524, which the current code cites as the reason for the workaround.
-
-### Problem
-
-`fromUrl` seeds its HTTP source with `metadata = { size: Infinity }` so that
-`@chunkd/source-http` never records a size. The intent is to survive S3, where
-the browser cannot read `Content-Range` (not in `Access-Control-Expose-Headers`)
-and the `Content-Length` fallback would record a single chunk's length as the
-file size.
-
-With an infinite size, two guards are disabled:
-
-- `getMaxLength` in `@cogeotiff/core` no longer shortens a header read that
-  would cross end of file.
-- `SourceChunk.fetchChunks` in `@chunkd/middleware` no longer clamps the last
-  chunk, so a read that crosses a 64 KB chunk boundary near EOF emits a request
-  for a chunk that starts past the end of the file.
-
-Any RFC 9110 server answers that request with 416. `SourceHttp.fetch` throws on
-a non-OK status, and the whole open rejects.
-
-Trigger: an IFD within 16 KB of end of file, positioned so that
-`ifdOffset + 16 KB` crosses into a chunk beginning at or after the file size.
-GDAL produces this layout whenever tags are rewritten in place after creation
-(band descriptions, statistics, nodata), because it appends a new directory at
-the end of the file. Files with the COG layout keep their directories at the
-start and are unaffected.
-
-Reproduction: `ESD_dk_2017.tif`, 4,972,969 bytes, first IFD at 4,972,240.
-Opening it via `fromUrl` against RasterEye's file server fails with
-`Failed to fetch ... bytes=4980736-5046271` (416).
-
-### Local workaround (in place)
-
-`webview/open-geotiff.ts` opens tiled files itself: a `bytes=0-0` request reads
-the true size from `Content-Range`, the `SourceHttp` is seeded with it, and
-`GeoTIFF.open` is called with the same chunk and cache middleware `fromUrl`
-uses. COGLayer accepts the resulting instance unchanged. This is safe here
-because RasterEye only loads through its own server, which exposes
-`Content-Range`.
-
-### Suggested upstream fix
-
-Keep the S3 workaround but stop treating the size as unknown once it is
-knowable. Two complementary changes:
-
-1. **Use `Content-Range` when it is readable.** In `fromUrl`, seed the size from
-   the first range response's `Content-Range` total when present, and fall
-   back to `Infinity` only when the header is not exposed. This restores the
-   `getMaxLength` and `SourceChunk` clamps for every server that exposes the
-   header, which includes any correctly configured S3 bucket.
-
-2. **Tolerate a 416 on a trailing chunk.** In `SourceChunk.fetchChunks` (or a
-   wrapper in `fromUrl`), when the size is unknown and a chunk request returns
-   416, treat that chunk as empty rather than failing the whole read. The
-   header parser already handles short buffers, so a truncated read at EOF is
-   equivalent to a clamped one. This covers the case where `Content-Range` is
-   hidden and the file happens to have its IFD near the end.
-
-Either change alone fixes the reproduction above; both together make the
-library robust regardless of server headers. When either lands upstream,
-`open-geotiff.ts` can be deleted and `tiled.ts` can pass the URL to COGLayer
-again.
+- **Strip-layout files still decode through geotiff.js.** deck.gl-raster 0.10
+  reads tiled files only (developmentseed/deck.gl-raster issue 573). When
+  strip reading lands upstream, `webview/strip.ts` can read pixels through
+  `@developmentseed/geotiff` and the `geotiff` dependency can be dropped.
+- **EPSG codes missing from the bundled table need epsg.io.** epsg.io is
+  tried first; the bundled proj4-list table (about 5,400 codes, last updated
+  February 2025) is the offline fallback. Newer codes such as GDA2020 MGA
+  zones are not in it.
+- **Pixel-interleaved multi-band LERC tiles are unpacked locally.**
+  `@developmentseed/geotiff` 0.10 returns them as one packed array labelled
+  as a single band; `tilePixels` in `webview/extract.ts` splits it. Report
+  upstream and remove the workaround once fixed.
+- **Palettes other than 256 entries** (16-bit colour tables) are drawn
+  through a colormap, not their own colours.
+- **Zarr support (follow-up).** `@developmentseed/deck.gl-zarr` 0.10 can draw
+  Zarr through the same pipeline. Plan: a right-click "Open in RasterEye"
+  command on `.zarr` folders that opens a standalone panel; serve the store
+  directory from the file server under one token with a path-traversal
+  guard; pass synthesised GeoZarr metadata to `ZarrSource.open` for
+  GDAL-written stores (transform from the X/Y coordinate arrays, CRS from
+  attributes or `pam.aux.xml`). Start with a spike on a single-resolution
+  store to check that chunk layout makes it usable.
+- **Native-projection view.** deck.gl-raster previews rendering in the
+  raster's own CRS, but it depends on deck.gl v10 (alpha only) and MapLibre
+  has no matching basemap. Revisit when deck.gl v10 is released.
+- **`scripts/`** holds strip-layout repro scripts written against the
+  geotiff.js v2 API. They are no longer packaged; update or remove them.

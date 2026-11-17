@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
+import * as crypto from "crypto";
 import { FileServer } from "./fileServer";
 import { buildViewerHtml } from "./webviewHtml";
 
@@ -31,6 +32,14 @@ export class GeoTIFFEditorProvider
   async openCustomDocument(
     uri: vscode.Uri
   ): Promise<vscode.CustomDocument> {
+    // The viewer reads the file from disk through the local file server.
+    // For any other scheme (a git revision, a remote or virtual file system)
+    // fsPath would point at a different file, or at nothing.
+    if (uri.scheme !== "file") {
+      throw new Error(
+        `RasterEye can only open local files (got a "${uri.scheme}:" resource).`
+      );
+    }
     const fsPath = uri.fsPath;
     return {
       uri,
@@ -80,6 +89,7 @@ export class GeoTIFFEditorProvider
       filename,
       cspSource: webview.cspSource,
       serverPort,
+      nonce: crypto.randomBytes(16).toString("base64"),
     });
   }
 }

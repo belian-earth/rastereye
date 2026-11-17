@@ -71,6 +71,15 @@ function makeRasterStyle(tiles: string[], attribution: string): any {
   };
 }
 
+/// Blank style used when the selected basemap cannot be fetched.
+export const FALLBACK_STYLE: any = {
+  version: 8,
+  sources: {},
+  layers: [
+    { id: "background", type: "background", paint: { "background-color": "#1b1b1b" } },
+  ],
+};
+
 /// Light, dark, and OSM-style basemaps are OpenFreeMap vector styles
 /// (https://openfreemap.org): no API key, no usage limits, OpenMapTiles
 /// schema over OpenStreetMap data. Carto's raster basemaps, used previously,
