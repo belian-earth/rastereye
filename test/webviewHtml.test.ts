@@ -90,7 +90,7 @@ describe("the real viewer.html template", () => {
   });
 
   it("contains no inline script or handler the policy would block", () => {
-    const scripts = [...html.matchAll(/<script\b([^>]*)>/g)].map((m) => m[1]);
+    const scripts = [...html.matchAll(/<script\b([^>]*)>/gi)].map((m) => m[1]);
     for (const attrs of scripts) {
       expect(attrs.includes("nonce=") || attrs.includes("src="), attrs).toBe(true);
     }
