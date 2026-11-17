@@ -105,3 +105,60 @@ describe("tilePixels", () => {
     expect(spp).toBe(3);
   });
 });
+
+describe("nodata matching and masks", () => {
+  it("masks float32 nodata that is not exactly representable", () => {
+    for (const nodata of [-9999.99, 1e20]) {
+      const data = Float32Array.of(1, nodata, 3);
+      const out = extractBand({ data }, 3, 1, 0, nodata, 1, 0);
+      expect(Array.from(out)).toEqual([1, SENTINEL_F32, 3]);
+    }
+  });
+
+  it("masks float32 nodata in every RGB channel", () => {
+    const nd = -9999.99;
+    const data = Float32Array.of(nd, 2, 3, 4, nd, 6);
+    const out = extractRgba({ data }, 2, 3, 0, 1, 2, nd, [1, 1, 1], [0, 0, 0]);
+    expect(out[0]).toBe(SENTINEL_F32);
+    expect(out[1]).toBe(2);
+    expect(out[5]).toBe(SENTINEL_F32);
+  });
+
+  it("does not treat 0 as nodata when the file declares none", () => {
+    const out = extractBand({ data: Uint8Array.of(0, 5) }, 2, 1, 0, null, 1, 0);
+    expect(Array.from(out)).toEqual([0, 5]);
+  });
+
+  it("folds pixels the internal mask marks invalid into the sentinel", () => {
+    const mask = Uint8Array.of(255, 0, 255);
+    const out = extractBand({ data: Uint8Array.of(7, 8, 9) }, 3, 1, 0, null, 2, 1, mask);
+    expect(Array.from(out)).toEqual([15, SENTINEL_F32, 19]);
+    const rgba = extractRgba(
+      { data: Uint8Array.of(1, 2, 3, 4, 5, 6) }, 2, 3, 0, 1, 2, null,
+      [1, 1, 1], [0, 0, 0], Uint8Array.of(0, 255),
+    );
+    expect(Array.from(rgba.slice(0, 3))).toEqual([SENTINEL_F32, SENTINEL_F32, SENTINEL_F32]);
+    expect(Array.from(rgba.slice(4, 7))).toEqual([4, 5, 6]);
+  });
+});
+
+describe("tilePixels with packed band-sequential data", () => {
+  it("splits a single array holding every band into per-band views", () => {
+    // 2x1 tile, 3 bands, as the LERC decoder returns pixel-interleaved files.
+    const packed = Uint16Array.of(1, 2, 10, 20, 100, 200);
+    const { px, spp } = tilePixels({
+      layout: "band-separate", bands: [packed], count: 3, width: 2, height: 1,
+    });
+    expect(spp).toBe(3);
+    expect(px.bands!.map((b) => Array.from(b))).toEqual([[1, 2], [10, 20], [100, 200]]);
+  });
+
+  it("leaves a genuine single-band tile alone", () => {
+    const band = Uint8Array.of(1, 2);
+    const { px, spp } = tilePixels({
+      layout: "band-separate", bands: [band], count: 1, width: 2, height: 1,
+    });
+    expect(spp).toBe(1);
+    expect(px.bands![0]).toBe(band);
+  });
+});

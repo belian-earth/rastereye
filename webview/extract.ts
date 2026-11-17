@@ -31,9 +31,13 @@ export function bandView(
 }
 
 /// Extract one band as Float32, applying GDAL scale/offset and folding
-/// NaN / nodata values into NODATA_SENTINEL for shader-side discard. The
-/// sentinel is preserved verbatim (not run through scale/offset) so
-/// FilterNoDataVal can match it exactly.
+/// NaN / nodata / masked-out pixels into NODATA_SENTINEL for shader-side
+/// discard. The sentinel is preserved verbatim (not run through scale/offset)
+/// so FilterNoDataVal can match it exactly.
+///
+/// Nodata is matched as both the double from the tag and its float32
+/// rounding (see isNodata in helpers.ts). `mask` is the file's internal
+/// validity mask, when it has one: 0 marks an invalid pixel.
 export function extractBand(
   px: TilePixels,
   pixelCount: number,
@@ -42,12 +46,15 @@ export function extractBand(
   nodata: number | null,
   scale: number,
   offset: number,
+  mask?: ArrayLike<number> | null,
 ): Float32Array {
   const out = new Float32Array(pixelCount);
   const { src, stride, base } = bandView(px, spp, bandIdx);
+  const nd = nodata ?? NaN;
+  const ndf = Math.fround(nd);
   for (let i = 0; i < pixelCount; i++) {
     const v = src[base + i * stride];
-    out[i] = (v === nodata || v !== v)
+    out[i] = (v === nd || v === ndf || v !== v || (mask && mask[i] === 0))
       ? NODATA_SENTINEL
       : v * scale + offset;
   }
@@ -66,6 +73,7 @@ export function extractRgba(
   nodata: number | null,
   scales: [number, number, number],
   offsets: [number, number, number],
+  mask?: ArrayLike<number> | null,
 ): Float32Array {
   const out = new Float32Array(pixelCount * 4);
   const r = bandView(px, spp, bandR);
@@ -73,15 +81,19 @@ export function extractRgba(
   const b = bandView(px, spp, bandB);
   const [sR, sG, sB] = scales;
   const [oR, oG, oB] = offsets;
+  const nd = nodata ?? NaN;
+  const ndf = Math.fround(nd);
+  const bad = (v: number) => v === nd || v === ndf || v !== v;
 
   for (let i = 0; i < pixelCount; i++) {
     const dnR = r.src[r.base + i * r.stride];
     const dnG = g.src[g.base + i * g.stride];
     const dnB = b.src[b.base + i * b.stride];
     const o = i * 4;
-    out[o]     = (dnR === nodata || dnR !== dnR) ? NODATA_SENTINEL : dnR * sR + oR;
-    out[o + 1] = (dnG === nodata || dnG !== dnG) ? NODATA_SENTINEL : dnG * sG + oG;
-    out[o + 2] = (dnB === nodata || dnB !== dnB) ? NODATA_SENTINEL : dnB * sB + oB;
+    const masked = !!mask && mask[i] === 0;
+    out[o]     = (masked || bad(dnR)) ? NODATA_SENTINEL : dnR * sR + oR;
+    out[o + 1] = (masked || bad(dnG)) ? NODATA_SENTINEL : dnG * sG + oG;
+    out[o + 2] = (masked || bad(dnB)) ? NODATA_SENTINEL : dnB * sB + oB;
     out[o + 3] = 1;
   }
   return out;
@@ -96,12 +108,20 @@ export function tilePixels(arr: {
   count?: number;
   width: number;
   height: number;
+  mask?: ArrayLike<number> | null;
 }): { px: TilePixels; spp: number } {
   if (arr.layout === "band-separate") {
-    return {
-      px: { bands: arr.bands! },
-      spp: arr.count ?? arr.bands!.length,
-    };
+    let bands = arr.bands!;
+    const count = arr.count ?? bands.length;
+    const n = arr.width * arr.height;
+    // @developmentseed/geotiff's LERC decoder returns a pixel-interleaved
+    // multi-band tile as one array holding every band in sequence, labelled
+    // as a single band. Split it so each band is addressable.
+    if (bands.length === 1 && count > 1 && bands[0].length === n * count) {
+      const packed = bands[0] as any;
+      bands = Array.from({ length: count }, (_, b) => packed.subarray(b * n, (b + 1) * n));
+    }
+    return { px: { bands }, spp: count };
   }
   const data = arr.data!;
   const spp =

@@ -1,260 +1,137 @@
-/// Strip-layout GeoTIFF fallback — uses geotiff.js readRasters + BitmapLayer.
+/// Strip-layout GeoTIFF path.
+///
+/// deck.gl-raster reads tiled files only (upstream issue 573), so the pixels
+/// of a strip file are decoded in one piece with geotiff.js. Everything else
+/// matches the tiled path: metadata comes from the same header, the image is
+/// warped from its own CRS by deck.gl-raster, and colouring runs on the GPU.
 
-import { fromUrl as geotiffFromUrl, fromArrayBuffer as geotiffFromArrayBuffer } from "geotiff";
-import proj4 from "proj4";
-import { BitmapLayer } from "@deck.gl/layers";
-import {
-  state, overlay, fileUrl, bandCount, nodataValue, scalingActive,
-  bandScales, bandOffsets, map,
-  setBandCount, setNodataValue, setBandNames,
-} from "./state";
-import { renderBandsToRGBA } from "./render";
-import { isNodata, dnToScaled, showLoading, showError } from "./helpers";
-import { setRange } from "./range";
-import { populateBandSelectors, updateControlVisibility } from "./ui";
+import { fromArrayBuffer } from "geotiff";
+import type { GeographicBounds } from "@developmentseed/deck.gl-raster";
+import { parseWkt, projectionFunctions, geographicBounds } from "@developmentseed/proj";
+import { resolveEpsg } from "./epsg";
+import { state, overlay, fileUrl } from "./state";
+import { setInspectSource, stripSource, applyAffine, invertAffine, Affine } from "./inspect";
+import { setRenderer } from "./layers";
+import { setSampleProvider } from "./percentiles";
+import { StripLayer } from "./strip-layer";
 
-// Exported for percentiles module to check which path we're on
-export let stripBands: ArrayLike<number>[] = [];
-let stripWidth = 0;
-let stripHeight = 0;
-let stripBbox: [number, number, number, number] = [0, 0, 0, 0];
+/// Largest display texture edge. Bigger images are decimated for display;
+/// the cell inspector still reads full-resolution values.
+const MAX_DISPLAY_SIZE = 4096;
+/// The whole file is buffered, then decoded at full resolution in memory.
+const MAX_FILE_BYTES = 1_000_000_000;
+const MAX_DECODED_BYTES = 2_000_000_000;
 
-// ---------------------------------------------------------------------------
-// Projection helpers
-// ---------------------------------------------------------------------------
+export class StripTooLargeError extends Error {}
 
-async function ensureProjection(epsgCode: number): Promise<void> {
-  if (epsgCode === 4326 || epsgCode === 3857) return;
-  const key = `EPSG:${epsgCode}`;
-  if (proj4.defs(key)) return;
-  try {
-    // Fetch OGC WKT — includes Helmert datum shift params directly,
-    // avoiding grid files that browsers can't load.
-    const resp = await fetch(`https://epsg.io/${epsgCode}.wkt`);
-    if (resp.ok) {
-      proj4.defs(key, await resp.text());
-      return;
-    }
-  } catch { /* ignore */ }
-  try {
-    const resp = await fetch(`https://epsg.io/${epsgCode}.proj4`);
-    if (resp.ok) proj4.defs(key, await resp.text());
-  } catch { /* ignore */ }
+function tooLarge(what: string, bytes: number): StripTooLargeError {
+  return new StripTooLargeError(
+    `This stripped GeoTIFF is too large to load in one piece (${what}: ` +
+    `${(bytes / 1e9).toFixed(1)} GB). Convert it to a Cloud-Optimized GeoTIFF ` +
+    `for tiled loading, e.g.: gdal_translate -of COG input.tif output.tif`,
+  );
 }
 
-function reprojectBBox(
-  bbox: number[],
-  epsgCode: number
-): [number, number, number, number] {
-  if (epsgCode === 4326) return bbox as [number, number, number, number];
-  try {
-    const ll = proj4(`EPSG:${epsgCode}`, "EPSG:4326", [bbox[0], bbox[1]]);
-    const ur = proj4(`EPSG:${epsgCode}`, "EPSG:4326", [bbox[2], bbox[3]]);
-    if (isFinite(ll[0]) && isFinite(ll[1]) && isFinite(ur[0]) && isFinite(ur[1])) {
-      return [ll[0], ll[1], ur[0], ur[1]];
-    }
-    console.warn("[RasterEye] Reprojection produced NaN, using raw bbox");
-    return bbox as [number, number, number, number];
-  } catch {
-    return bbox as [number, number, number, number];
+let stripBands: ArrayLike<number>[] = [];
+let displayWidth = 0;
+let displayHeight = 0;
+let reprojectionFns: any = null;
+
+/// Entry point for the strip path. `tiff` is the opened header
+/// (@developmentseed/geotiff). Returns the raster's geographic bounds.
+export async function loadStrip(tiff: any): Promise<GeographicBounds> {
+  const w: number = tiff.width;
+  const h: number = tiff.height;
+  const spp: number = tiff.count ?? 1;
+
+  // Guard on the decoded size as well as the file size: a well-compressed
+  // file can expand to many times its size on disk.
+  const bits: number = tiff.cachedPrimaryImageTags?.bitsPerSample?.[0] ?? 8;
+  const decodedBytes = w * h * spp * Math.ceil(bits / 8);
+  if (decodedBytes > MAX_DECODED_BYTES) throw tooLarge("decoded size", decodedBytes);
+
+  const crs = tiff.crs;
+  const projection = typeof crs === "number" ? await resolveEpsg(crs) : parseWkt(crs);
+  const fns = projectionFunctions(projection);
+
+  // Read the whole file in one request. Strip files hold one row per strip,
+  // so range-based reading would issue thousands of small requests.
+  const resp = await fetch(fileUrl);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+  const contentLength = Number(resp.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_FILE_BYTES) {
+    throw tooLarge("file size", contentLength);
   }
+  const image = await (await fromArrayBuffer(await resp.arrayBuffer())).getImage();
+
+  displayWidth = Math.min(w, MAX_DISPLAY_SIZE);
+  displayHeight = Math.min(h, MAX_DISPLAY_SIZE);
+  const decimated = displayWidth < w || displayHeight < h;
+  const rasters = await image.readRasters({ width: displayWidth, height: displayHeight });
+  stripBands = Array.from({ length: spp }, (_, b) => rasters[b] as ArrayLike<number>);
+
+  // Display pixel -> file CRS -> longitude/latitude. The affine maps full-
+  // resolution pixels, so display pixels are scaled up first.
+  const affine = tiff.transform as Affine;
+  const inverse = invertAffine(affine);
+  const sx = w / displayWidth;
+  const sy = h / displayHeight;
+  reprojectionFns = {
+    forwardTransform: (x: number, y: number) => applyAffine(affine, x * sx, y * sy),
+    inverseTransform: (x: number, y: number) => {
+      const [col, row] = applyAffine(inverse, x, y);
+      return [col / sx, row / sy];
+    },
+    forwardReproject: fns.projectTo4326,
+    inverseReproject: fns.projectFrom4326,
+  };
+
+  setInspectSource(stripSource({
+    tiff,
+    projectFrom4326: (lng, lat) => fns.projectFrom4326(lng, lat) as [number, number],
+    bands: stripBands,
+    // Retain the decoder only when the display bands were decimated, so the
+    // true cell can still be read.
+    image: decimated ? image : null,
+  }));
+  setSampleProvider(async () => [{
+    px: { bands: stripBands },
+    spp,
+    pixelCount: displayWidth * displayHeight,
+  }]);
+  setRenderer({ rerender: renderStrip, rebuild: renderStrip });
+
+  const [minX, minY, maxX, maxY] = tiff.bbox;
+  const [west, south, east, north] = geographicBounds(
+    [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]],
+    fns.projectTo4326,
+  );
+  return { west, south, east, north };
 }
 
-// ---------------------------------------------------------------------------
-// File probing — detect tiled vs strip
-// ---------------------------------------------------------------------------
-
-export async function probeAndLoad(
-  url: string,
-  onTiled: () => void
-): Promise<void> {
-  try {
-    const tiff = await geotiffFromUrl(url);
-    const image = await tiff.getImage();
-
-    // VS Code activates this editor on filename pattern alone, so we land
-    // here for any *.tif. Without geo metadata our renderers either silently
-    // misplace the image (strip path) or hit an opaque CRS-parse error
-    // inside COGLayer (tiled path); short-circuit with a clear message.
-    const geoKeys = image.getGeoKeys();
-    if (!geoKeys || Object.keys(geoKeys).length === 0) {
-      showError(
-        "This TIFF has no geographic metadata. RasterEye is for georeferenced rasters — open it with the default image viewer instead.",
-      );
-      return;
-    }
-
-    if (image.isTiled) {
-      onTiled();
-    } else {
-      await loadStripImage();
-    }
-  } catch (err: any) {
-    console.error("[RasterEye] File probe failed:", err);
-    showError("Failed to open GeoTIFF: " + (err?.message || err));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Strip image loading
-// ---------------------------------------------------------------------------
-
-async function loadStripImage(): Promise<void> {
-  try {
-    // Read the whole file once instead of via `fromUrl`. geotiff.js's
-    // BlockedSource fragments stripped-layout reads (one row per strip ⇒
-    // thousands of small range requests for a moderate-sized file), and
-    // Chromium webviews cap parallel HTTP/1.1 connections per origin at 6 —
-    // the resulting queue hits `net::ERR_INSUFFICIENT_RESOURCES`, which the
-    // fetch API surfaces as a bare "Failed to fetch" TypeError.
-    // `readRasters` decompresses the full raster into memory anyway, so the
-    // memory cost of holding the source bytes is comparable.
-    const resp = await fetch(fileUrl);
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-    }
-    // The strip path buffers and decodes the whole file on the main thread;
-    // past ~1 GB that freezes the webview or OOMs the renderer.
-    const contentLength = Number(resp.headers.get("content-length"));
-    const MAX_STRIP_BYTES = 1_000_000_000;
-    if (Number.isFinite(contentLength) && contentLength > MAX_STRIP_BYTES) {
-      const gb = (contentLength / 1e9).toFixed(1);
-      showError(
-        `This stripped GeoTIFF is ${gb} GB — too large to load in one piece. ` +
-        `Convert it to a Cloud-Optimized GeoTIFF for tiled loading, e.g.: ` +
-        `gdal_translate -of COG input.tif output.tif`,
-      );
-      return;
-    }
-    const buf = await resp.arrayBuffer();
-    const tiff = await geotiffFromArrayBuffer(buf);
-    const image = await tiff.getImage();
-
-    const w = image.getWidth();
-    const h = image.getHeight();
-    const spp = image.getSamplesPerPixel();
-
-    const geoKeys = image.getGeoKeys() ?? {};
-    const epsgCode =
-      geoKeys.ProjectedCSTypeGeoKey || geoKeys.GeographicTypeGeoKey || 4326;
-    await ensureProjection(epsgCode);
-
-    const readW = Math.min(w, 4096);
-    const readH = Math.min(h, 4096);
-    const rasters = await image.readRasters({ width: readW, height: readH });
-
-    const bands: ArrayLike<number>[] = [];
-    for (let b = 0; b < spp; b++) {
-      bands.push(rasters[b] as ArrayLike<number>);
-    }
-
-    setBandCount(spp);
-    setNodataValue(image.getGDALNoData());
-
-    // Band names from GDALMetadata XML
-    try {
-      const fileDir = image.fileDirectory as any;
-      const gdalMd = fileDir?.GDAL_METADATA;
-      if (gdalMd) {
-        const doc = new DOMParser().parseFromString(gdalMd, "text/xml");
-        const items = doc.querySelectorAll('Item[name="DESCRIPTION"]');
-        if (items.length > 0) {
-          const names = new Array(spp).fill("");
-          items.forEach((item) => {
-            const sample = item.getAttribute("sample");
-            if (sample != null) {
-              names[parseInt(sample, 10)] = item.textContent ?? "";
-            }
-          });
-          setBandNames(names);
-        }
-      }
-    } catch { /* ignore */ }
-
-    stripBbox = reprojectBBox(image.getBoundingBox(), epsgCode);
-
-    // reprojectBBox falls back to the raw projected bbox when the CRS could
-    // not be resolved (e.g. epsg.io unreachable). Passing metre coordinates
-    // to fitBounds would throw an unrelated-looking LngLat error, so fail
-    // with the actual cause instead.
-    const [w0, s0, e0, n0] = stripBbox;
-    const plausible =
-      Math.abs(w0) <= 360 && Math.abs(e0) <= 360 &&
-      Math.abs(s0) <= 90 && Math.abs(n0) <= 90;
-    if (!plausible) {
-      showError(
-        `Could not reproject EPSG:${epsgCode} coordinates to WGS84. ` +
-        `Projection lookup may have failed (epsg.io unreachable?). ` +
-        `The raster cannot be placed on the map.`,
-      );
-      return;
-    }
-
-    stripBands = bands;
-    stripWidth = readW;
-    stripHeight = readH;
-
-    // Compute percentiles from first band
-    const bi = Math.min(state.singleBand, spp - 1);
-    const nodata = nodataValue;
-    const values: number[] = [];
-    const band = bands[bi];
-    for (let i = 0; i < band.length; i++) {
-      const v = band[i];
-      if (isNodata(v, nodata)) continue;
-      values.push(scalingActive ? dnToScaled(v, bi) : v);
-    }
-    if (values.length >= 10) {
-      values.sort((a, b) => a - b);
-      setRange(
-        values[Math.floor(values.length * 0.02)],
-        values[Math.floor(values.length * 0.98)]
-      );
-    }
-
-    state.renderMode = "singleband";
-    (document.getElementById("mode-select") as HTMLSelectElement).value =
-      "singleband";
-    populateBandSelectors(spp);
-    updateControlVisibility();
-    showLoading(false);
-
-    const [west, south, east, north] = stripBbox;
-    map.fitBounds(
-      [[west, south], [east, north]],
-      { padding: 50, maxZoom: 18 }
-    );
-
-    renderStripImage();
-  } catch (err: any) {
-    console.error("[RasterEye] Strip reading failed:", err);
-    showError("Failed to read GeoTIFF: " + (err?.message || err));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Strip rendering
-// ---------------------------------------------------------------------------
-
-export function renderStripImage(): void {
+function renderStrip(): void {
   if (stripBands.length === 0) return;
-
-  const rgba = renderBandsToRGBA(stripBands, stripWidth, stripHeight);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = stripWidth;
-  canvas.height = stripHeight;
-  const ctx = canvas.getContext("2d")!;
-  ctx.putImageData(new ImageData(rgba, stripWidth, stripHeight), 0, 0);
-
-  const [west, south, east, north] = stripBbox;
+  const textureKey = state.renderMode === "3band"
+    ? `rgb-${state.bandR}-${state.bandG}-${state.bandB}`
+    : `band-${state.singleBand}`;
   overlay.setProps({
     layers: [
-      new BitmapLayer({
+      new StripLayer({
         id: "strip-raster",
-        image: canvas,
-        bounds: [west, south, east, north],
         opacity: state.opacity,
+        bands: stripBands,
+        width: displayWidth,
+        height: displayHeight,
+        reprojectionFns,
+        mode: state.renderMode,
+        singleBand: state.singleBand,
+        bandR: state.bandR,
+        bandG: state.bandG,
+        bandB: state.bandB,
+        textureKey,
+        pipelineKey: [
+          state.colormap, state.colormapReversed, state.valueMin, state.valueMax,
+        ].join("|"),
       }),
     ],
   });

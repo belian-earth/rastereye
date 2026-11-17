@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { FileServer } from "../src/fileServer";
+import { FileServer, parseRangeHeader } from "../src/fileServer";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -186,13 +186,46 @@ describe("FileServer", () => {
     fs.unlinkSync(tempFile);
   });
 
-  it("serves static viewer.html if dist exists", async () => {
-    const port = server.getPort();
-    const res = await fetch(`http://127.0.0.1:${port}/viewer`);
-    // May 404 if dist/viewer.html doesn't exist in test env — that's fine
-    expect([200, 404]).toContain(res.status);
-    if (res.status === 200) {
-      expect(res.headers.get("content-type")).toMatch(/text\/html/);
-    }
+  it("does not expose extension assets", async () => {
+    const res = await fetch(`http://127.0.0.1:${server.getPort()}/viewer.html`);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when a registered file has been deleted", async () => {
+    const gone = path.join(os.tmpdir(), `rastereye-gone-${Date.now()}.bin`);
+    fs.writeFileSync(gone, "x");
+    const url = server.registerFile(gone);
+    fs.unlinkSync(gone);
+    expect((await fetch(url)).status).toBe(404);
+    server.unregisterFile(gone);
+  });
+});
+
+describe("parseRangeHeader", () => {
+  const SIZE = 100;
+
+  it("parses closed, open-ended and suffix ranges", () => {
+    expect(parseRangeHeader("bytes=0-9", SIZE)).toEqual({ start: 0, end: 9 });
+    expect(parseRangeHeader("bytes=90-", SIZE)).toEqual({ start: 90, end: 99 });
+    expect(parseRangeHeader("bytes=-10", SIZE)).toEqual({ start: 90, end: 99 });
+  });
+
+  it("clamps an end past EOF and a suffix longer than the file", () => {
+    expect(parseRangeHeader("bytes=50-500", SIZE)).toEqual({ start: 50, end: 99 });
+    expect(parseRangeHeader("bytes=-500", SIZE)).toEqual({ start: 0, end: 99 });
+  });
+
+  it("reports a start at or past EOF as unsatisfiable", () => {
+    expect(parseRangeHeader("bytes=100-", SIZE)).toBe("invalid");
+    expect(parseRangeHeader("bytes=100-200", SIZE)).toBe("invalid");
+    expect(parseRangeHeader("bytes=-0", SIZE)).toBe("invalid");
+    expect(parseRangeHeader("bytes=0-0", 0)).toBe("invalid");
+  });
+
+  it("ignores malformed headers, including a reversed range", () => {
+    expect(parseRangeHeader("bytes=5-3", SIZE)).toBeNull();
+    expect(parseRangeHeader("bytes=-", SIZE)).toBeNull();
+    expect(parseRangeHeader("bytes=0-1,5-6", SIZE)).toBeNull();
+    expect(parseRangeHeader("items=0-1", SIZE)).toBeNull();
   });
 });

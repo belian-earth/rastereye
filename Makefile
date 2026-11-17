@@ -22,7 +22,7 @@ test: node_modules
 	@npm test
 
 # Package extension into .vsix file
-package:
+package: build
 	@echo "Packaging extension..."
 	@npm run package
 	@echo "✓ Package created: rastereye-*.vsix"

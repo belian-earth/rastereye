@@ -1,64 +1,86 @@
-/// Percentile computation for auto-stretch.
+/// Percentile computation for the automatic 2-98% stretch.
+///
+/// Path-agnostic: the active render path registers a provider that returns
+/// one or more pixel samples (decoded tiles, or the strip image's bands).
 
-import {
-  state, geotiffObj, bandCount, nodataValue, scalingActive,
-} from "./state";
-import { isNodata, dnToScaled } from "./helpers";
+import { nodataValue, scalingActive, bandScales, bandOffsets, bandCount } from "./state";
+import { isAbortError } from "./helpers";
 import { setRange } from "./range";
-import { stripBands } from "./strip";
-import { getDecoderPool } from "./tiled";
-import { tilePixels, bandView } from "./extract";
+import { bandView, TilePixels } from "./extract";
 
-let cachedTileArray: any = null;
+export interface PixelSample {
+  px: TilePixels;
+  spp: number;
+  pixelCount: number;
+  mask?: ArrayLike<number> | null;
+}
 
-export async function computePercentilesForBand(bandIdx: number): Promise<void> {
-  if (!geotiffObj && stripBands.length === 0) return;
-  try {
-    const bi = Math.min(bandIdx, bandCount - 1);
-    const nodata = nodataValue;
-    const values: number[] = [];
+type SampleProvider = () => Promise<PixelSample[]>;
 
-    if (stripBands.length > 0) {
-      const band = stripBands[bi];
-      for (let i = 0; i < band.length; i++) {
-        const dn = band[i];
-        if (isNodata(dn, nodata)) continue;
-        values.push(scalingActive ? dnToScaled(dn, bi) : dn);
-      }
-    } else {
-      if (!cachedTileArray && geotiffObj) {
-        // Sample the coarsest overview when one exists (overviews are listed
-        // finest-first): its tile 0,0 spans the whole image, unlike the
-        // full-res top-left tile, which may be unrepresentative or all-nodata.
-        // boundless: false — GDAL pads edge tiles with zeros (not nodata),
-        // which would otherwise skew the stretch.
-        const overviews = geotiffObj.overviews ?? [];
-        const source = overviews.length > 0
-          ? overviews[overviews.length - 1]
-          : geotiffObj;
-        const tile = await source.fetchTile(0, 0, {
-          pool: getDecoderPool(),
-          boundless: false,
-        });
-        cachedTileArray = tile.array;
-      }
-      if (!cachedTileArray) return;
-      const { px, spp } = tilePixels(cachedTileArray);
-      const { src, stride, base } = bandView(px, spp, bi);
-      const pixelCount = cachedTileArray.width * cachedTileArray.height;
-      for (let i = 0; i < pixelCount; i++) {
-        const dn = src[base + i * stride];
-        if (isNodata(dn, nodata)) continue;
-        values.push(scalingActive ? dnToScaled(dn, bi) : dn);
-      }
+/// Upper bound on values sorted per band. Larger inputs are subsampled on a
+/// regular stride, which keeps the sort near 100 ms instead of seconds.
+const MAX_VALUES = 1 << 20;
+
+let provider: SampleProvider | null = null;
+let samplesPromise: Promise<PixelSample[]> | null = null;
+let seq = 0;
+
+export function setSampleProvider(p: SampleProvider | null): void {
+  provider = p;
+  samplesPromise = null;
+}
+
+/// 2nd and 98th percentile of one band across the samples, in display units,
+/// or null when fewer than 10 valid values exist.
+export function percentileRange(
+  samples: PixelSample[],
+  bandIdx: number,
+  nodata: number | null,
+  scale: number,
+  offset: number,
+  maxValues = MAX_VALUES,
+): [number, number] | null {
+  const total = samples.reduce((n, s) => n + s.pixelCount, 0);
+  if (total === 0) return null;
+  const step = Math.max(1, Math.ceil(total / maxValues));
+  const values = new Float64Array(Math.ceil(total / step) + samples.length);
+  const nd = nodata ?? NaN;
+  const ndf = Math.fround(nd);
+  let n = 0;
+  for (const s of samples) {
+    const { src, stride, base } = bandView(s.px, s.spp, bandIdx);
+    const mask = s.mask;
+    for (let i = 0; i < s.pixelCount; i += step) {
+      const v = src[base + i * stride];
+      if (v === nd || v === ndf || v !== v || (mask && mask[i] === 0)) continue;
+      values[n++] = v * scale + offset;
     }
-    if (values.length < 10) return;
+  }
+  if (n < 10) return null;
+  const sorted = values.subarray(0, n).sort();
+  return [sorted[Math.floor(n * 0.02)], sorted[Math.floor(n * 0.98)]];
+}
 
-    values.sort((a, b) => a - b);
-    const p2 = values[Math.floor(values.length * 0.02)];
-    const p98 = values[Math.floor(values.length * 0.98)];
-    setRange(p2, p98);
+/// Compute and apply the stretch for a band. If the band changes while the
+/// samples are still loading, only the latest request applies its result.
+export async function computePercentilesForBand(bandIdx: number): Promise<void> {
+  if (!provider) return;
+  const mine = ++seq;
+  try {
+    if (!samplesPromise) {
+      samplesPromise = provider();
+      // A failed sample must not be cached: the next band change retries.
+      samplesPromise.catch(() => { samplesPromise = null; });
+    }
+    const samples = await samplesPromise;
+    if (mine !== seq) return;
+    const bi = Math.min(bandIdx, bandCount - 1);
+    const scale = scalingActive ? (bandScales[bi] ?? 1) : 1;
+    const offset = scalingActive ? (bandOffsets[bi] ?? 0) : 0;
+    const range = percentileRange(samples, bi, nodataValue, scale, offset);
+    if (range) setRange(range[0], range[1]);
   } catch (err) {
+    if (isAbortError(err)) return;
     console.warn("[RasterEye] Could not compute percentiles:", err);
   }
 }
